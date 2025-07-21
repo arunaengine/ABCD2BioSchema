@@ -27,7 +27,7 @@ async fn main() {
     // Load environment variables from .env file
     dotenv().ok();
 
-    let server_address = dotenvy::var("SERVER_ADDRESS").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let server_address = dotenvy::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let service_port = dotenvy::var("SERVICE_PORT").unwrap_or_else(|_| "3000".to_string()).parse::<u16>().expect("Please select a valid port number of type u16");
 
     let app = create_router();
