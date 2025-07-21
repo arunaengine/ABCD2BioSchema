@@ -1,0 +1,50 @@
+# Rust build artifacts
+target/
+*.rs.bk
+*.pdb
+
+# Dependency directories
+node_modules/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+README.md
+docs/
+
+# Logs
+*.log
+
+# Temporary files
+temp/
+tmp/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Test files
+tests/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
