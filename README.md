@@ -43,9 +43,6 @@ curl -X POST http://localhost:3000/transform/url \
 
 ## Running via Docker
 
-```bash
-```
-
 A Dockerfile is included to make deployment easy.
 
 ```bash
