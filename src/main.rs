@@ -3,7 +3,6 @@ use axum::Router;
 use axum::routing::{get, post};
 use dotenvy::dotenv;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 use tracing_subscriber;
@@ -14,12 +13,10 @@ mod service;
 mod webhook;
 
 pub struct Handler {
-    _api_base_url: String,
-    _temp_dir: String,
-    webhook: GfbioWebhook,
+    pub webhook: GfbioWebhook,
 }
 
-pub fn create_router(state: Arc<Mutex<Handler>>) -> Router {
+pub fn create_router(state: Arc<Handler>) -> Router {
     Router::new()
         .route("/health", get(service::health_check))
         .route("/transform", post(service::upload_and_transform))
@@ -44,13 +41,10 @@ async fn main() {
 
     let api_base_url = dotenvy::var("GFBIO_BASE_URL").expect("GFBIO_BASE_URL must be set");
     let temp_dir = dotenvy::var("TEMP_DIR").expect("TEMP_DIR must be set");
-    let webhook = GfbioWebhook::with_config(api_base_url.clone(), temp_dir.clone());
+    let t_id = dotenvy::var("TRANSFORMATION_ID").unwrap_or("5".to_string());
+    let webhook = GfbioWebhook::with_config(t_id, api_base_url.clone(), temp_dir.clone());
 
-    let state = Arc::new(Mutex::new(Handler {
-        _api_base_url,
-        _temp_dir,
-        webhook,
-    }));
+    let state = Arc::new(Handler { webhook });
 
     let app = create_router(state);
 
