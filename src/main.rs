@@ -1,44 +1,72 @@
-use axum::{Router};
+use crate::webhook::GfbioWebhook;
+use axum::Router;
 use axum::routing::{get, post};
-use tower_http::cors::CorsLayer;
 use dotenvy::dotenv;
-use tracing::{info};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tower_http::cors::CorsLayer;
+use tracing::info;
 use tracing_subscriber;
 
 mod job;
+mod models;
 mod service;
 mod webhook;
-mod models;
 
-pub fn create_router() -> Router {
+pub struct Handler {
+    _api_base_url: String,
+    _temp_dir: String,
+    webhook: GfbioWebhook,
+}
+
+pub fn create_router(state: Arc<Mutex<Handler>>) -> Router {
     Router::new()
         .route("/health", get(service::health_check))
         .route("/transform", post(service::upload_and_transform))
         .route("/transform/url", post(service::url_transform))
         .route("/job/{job_id}", get(service::get_job_status))
         .layer(CorsLayer::permissive())
+        .with_state(state)
 }
 
 #[tokio::main]
 async fn main() {
-
     tracing_subscriber::fmt::init();
 
     // Load environment variables from .env file
     dotenv().ok();
 
     let server_address = dotenvy::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let service_port = dotenvy::var("SERVICE_PORT").unwrap_or_else(|_| "3000".to_string()).parse::<u16>().expect("Please select a valid port number of type u16");
+    let service_port = dotenvy::var("SERVICE_PORT")
+        .unwrap_or_else(|_| "3000".to_string())
+        .parse::<u16>()
+        .expect("Please select a valid port number of type u16");
 
-    let app = create_router();
+    let api_base_url = dotenvy::var("GFBIO_BASE_URL").expect("GFBIO_BASE_URL must be set");
+    let temp_dir = dotenvy::var("TEMP_DIR").expect("TEMP_DIR must be set");
+    let webhook = GfbioWebhook::with_config(api_base_url.clone(), temp_dir.clone());
+
+    let state = Arc::new(Mutex::new(Handler {
+        _api_base_url,
+        _temp_dir,
+        webhook,
+    }));
+
+    let app = create_router(state);
 
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", server_address, service_port))
         .await
         .unwrap();
 
-    info!("ABCD2BioSchema Service running on {}:{}", server_address, service_port);
+    info!(
+        "ABCD2BioSchema Service running on {}:{}",
+        server_address, service_port
+    );
 
-    println!("ABCD2BioSchema Service running on {}:{}", server_address, service_port);
+    println!(
+        "ABCD2BioSchema Service running on {}:{}",
+        server_address, service_port
+    );
     println!("Endpoints:");
     println!("\tPOST\t/transform\t- Upload XML and start transformation");
     println!("\tPOST\t/transform/url\t- Send XML via URL and start transformation");
