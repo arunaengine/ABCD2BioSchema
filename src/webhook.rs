@@ -1,30 +1,43 @@
 use crate::job::Job;
-use crate::models::{ErrorResponse, Hook, JobResponse, TransformationParams};
+use crate::models::{ClientInterceptor, ErrorResponse, Hook, JobResponse, TransformationParams};
 use aruna_rust_api::api::storage::models::v2::generic_resource::Resource;
+use aruna_rust_api::api::storage::models::v2::relation::Relation as RelationEnum;
+use aruna_rust_api::api::storage::models::v2::{
+    InternalRelation, InternalRelationVariant, Relation, RelationDirection, ResourceVariant,
+};
+use aruna_rust_api::api::storage::services::v2::ModifyRelationsRequest;
 use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::config::Credentials;
+use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
 use axum::Json;
 use axum::extract::Multipart;
 use axum::http::StatusCode;
 use chrono::FixedOffset;
+use futures_util::StreamExt;
 use reqwest::Client;
 use tokio::fs;
+use tonic::transport::Channel;
 use uuid::Uuid;
+
+pub const CHUNK_SIZE: usize = 10_485_760;
+pub const MULTIPART_THRESHOLD: usize = 104_857_600;
 
 pub struct GfbioWebhook {
     client: Client,
     gfbio_base_url: String,
     temp_dir: String,
     transformation_id: String,
+    channel: Channel,
 }
 
 impl GfbioWebhook {
-    pub fn new() -> Self {
+    pub fn new(channel: Channel) -> Self {
         Self {
             client: Client::new(),
             gfbio_base_url: "https://transformation.gfbio.org/api".to_string(),
             temp_dir: "./temp".to_string(),
             transformation_id: "5".to_string(),
+            channel,
         }
     }
 
@@ -32,12 +45,14 @@ impl GfbioWebhook {
         transformation_id: String,
         gfbio_base_url: String,
         temp_dir: String,
+        channel: Channel,
     ) -> Self {
         Self {
             client: Client::new(),
             gfbio_base_url,
             temp_dir,
             transformation_id,
+            channel,
         }
     }
 
@@ -166,14 +181,14 @@ impl GfbioWebhook {
 
         let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 
-        let multipart = match hook.object {
-            Resource::Object(r) => r.content_len >= 104_857_600,
+        let (multipart, trigger_object) = match hook.object {
+            Resource::Object(r) => (r.content_len as usize >= MULTIPART_THRESHOLD, r.id),
             _ => {
                 return Err(format!("Invalid hook triggered").into());
             }
         };
 
-        if multipart {
+        let etag = if multipart {
             let upload_id = s3_client
                 .create_multipart_upload()
                 .set_bucket(Some(bucket.to_string()))
@@ -181,35 +196,84 @@ impl GfbioWebhook {
                 .send()
                 .await?
                 .upload_id()
-                .map(|id| id.to_string());
+                .map(|id| id.to_string())
+                .ok_or_else(|| format!("No upload id created"))?;
 
-            let stream = response.bytes_stream();
-            todo!("Impl multipart")
+            let mut stream = response.bytes_stream().chunks(CHUNK_SIZE).into_inner();
 
+            let mut builder = CompletedMultipartUpload::builder();
+            let mut counter = 0;
+            while let Some(bytes) = stream.next().await {
+                counter += 1;
+                let chunked_stream = bytes?;
+                let part = s3_client
+                    .upload_part()
+                    .set_bucket(Some(bucket.to_string()))
+                    .set_key(Some(key.to_string()))
+                    .body(chunked_stream.into())
+                    .upload_id(&upload_id)
+                    .send()
+                    .await?;
+                builder = builder.parts(
+                    CompletedPart::builder()
+                        .e_tag(part.e_tag().ok_or_else(|| format!("No etag returned"))?)
+                        .part_number(counter.clone())
+                        .build(),
+                );
+            }
+
+            let etag = s3_client
+                .complete_multipart_upload()
+                .set_bucket(Some(bucket.to_string()))
+                .set_key(Some(key.to_string()))
+                .upload_id(&upload_id)
+                .multipart_upload(builder.build())
+                .send()
+                .await?
+                .e_tag;
+            etag
         } else {
-            let upload_id = s3_client
+            let etag = s3_client
                 .put_object()
                 .body(response.bytes().await?.into())
                 .set_bucket(Some(bucket.to_string()))
                 .set_key(Some(key.to_string()))
                 .send()
-                .await?;
+                .await?
+                .e_tag;
+            etag
         };
+        let object_id = etag
+            .ok_or_else(|| format!("No etag returned"))?
+            .strip_prefix("-")
+            .map(|p| p.to_string())
+            .ok_or_else(|| format!("Invalid etag provided"))?;
 
-        // TODO: Upload to s3
-        // self
-        // .s3_client
-        // .put_object()
-        // .set_bucket(Some(location.bucket))
-        // .set_key(Some(location.key))
-        // .set_content_length(Some(content_len))
-        // .body(bytestream)
-        // .send()
-        // .await
-        //
-        let json_response: serde_json::Value = todo!();
-        //response.json().await?;
-        //println!("Result data fetched successfully:\n{:#?}", json_response);
+        let interceptor = ClientInterceptor {
+            api_token: hook.token,
+        };
+        let mut client =
+        aruna_rust_api::api::storage::services::v2::relations_service_client::RelationsServiceClient::with_interceptor(
+            self.channel.clone(),
+            interceptor
+        );
+        let response = client
+            .modify_relations(ModifyRelationsRequest {
+                resource_id: object_id,
+                add_relations: vec![Relation {
+                    relation: Some(RelationEnum::Internal(InternalRelation {
+                        resource_id: trigger_object,
+                        resource_variant: ResourceVariant::Object as i32,
+                        defined_variant: InternalRelationVariant::Origin as i32,
+                        custom_variant: None,
+                        direction: RelationDirection::Outbound as i32,
+                    })),
+                }],
+                remove_relations: vec![],
+            })
+            .await?
+            .into_inner();
+        let json_response: serde_json::Value = serde_json::to_value(response)?;
         Ok(json_response)
     }
 

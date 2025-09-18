@@ -1,5 +1,6 @@
 use aruna_rust_api::api::storage::models::v2::generic_resource::Resource;
 use serde::{Deserialize, Serialize};
+use tonic::metadata::{AsciiMetadataKey, AsciiMetadataValue};
 use crate::job::Job;
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +35,27 @@ pub struct Hook {
     pub secret: String,
     pub download: Option<String>,
     pub pubkey_serial: i32,
-    // TODO: scoped token
+    pub token: String,
     pub access_key: Option<String>,
     pub secret_key: Option<String>,
+}
+
+
+#[derive(Clone)]
+pub struct ClientInterceptor {
+    pub api_token: String,
+}
+// Implement a request interceptor which always adds 
+//  the authorization header with a specific API token to all requests
+impl tonic::service::Interceptor for ClientInterceptor {
+    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        let mut mut_req: tonic::Request<()> = request;
+        let metadata = mut_req.metadata_mut();
+        metadata.append(
+            AsciiMetadataKey::from_bytes("Authorization".as_bytes()).unwrap(),
+            AsciiMetadataValue::try_from(format!("Bearer {}", self.api_token.as_str())).unwrap(),
+        );
+
+        return Ok(mut_req);
+    }
 }

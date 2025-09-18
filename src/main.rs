@@ -3,6 +3,7 @@ use axum::Router;
 use axum::routing::{get, post};
 use dotenvy::dotenv;
 use std::sync::Arc;
+use tonic::transport::{Channel, ClientTlsConfig};
 use tower_http::cors::CorsLayer;
 use tracing::info;
 use tracing_subscriber;
@@ -42,12 +43,18 @@ async fn main() {
     let api_base_url = dotenvy::var("GFBIO_BASE_URL").expect("GFBIO_BASE_URL must be set");
     let temp_dir = dotenvy::var("TEMP_DIR").expect("TEMP_DIR must be set");
     let t_id = dotenvy::var("TRANSFORMATION_ID").unwrap_or("5".to_string());
-    let webhook = GfbioWebhook::with_config(t_id, api_base_url.clone(), temp_dir.clone());
 
+    let tls_config = ClientTlsConfig::new();
+    let aruna_server_address = dotenvy::var("ARUNA_SERVER_ADDRESS").expect("No aruna server set");
+    let endpoint = Channel::from_shared(aruna_server_address)
+        .unwrap()
+        .tls_config(tls_config)
+        .unwrap();
+    let channel = endpoint.connect().await.unwrap();
+
+    let webhook = GfbioWebhook::with_config(t_id, api_base_url.clone(), temp_dir.clone(), channel);
     let state = Arc::new(Handler { webhook });
-
     let app = create_router(state);
-
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", server_address, service_port))
         .await
         .unwrap();
