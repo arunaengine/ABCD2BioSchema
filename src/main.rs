@@ -26,13 +26,6 @@ pub fn create_router(state: Arc<Handler>) -> Router {
         .route("/transform", post(service::upload_and_transform))
         .route("/transform/url", post(service::url_transform))
         .route("/job/{job_id}", get(service::get_job_status))
-        .route(
-            "/*path",
-            get(debug_route)
-                .post(debug_route)
-                .put(debug_route)
-                .delete(debug_route),
-        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
