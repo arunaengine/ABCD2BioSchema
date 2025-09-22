@@ -1,11 +1,14 @@
-use aruna_rust_api::api::hooks::services::v2::hook_callback_request::Status;
-use aruna_rust_api::api::hooks::services::v2::{Finished, HookCallbackRequest};
-use aruna_rust_api::api::hooks::services::v2::hooks_service_client::HooksServiceClient;
 use crate::job::Job;
 use crate::models::{ClientInterceptor, ErrorResponse, Hook, JobResponse, TransformationParams};
+use aruna_rust_api::api::hooks::services::v2::hook_callback_request::Status;
+use aruna_rust_api::api::hooks::services::v2::hooks_service_client::HooksServiceClient;
+use aruna_rust_api::api::hooks::services::v2::{Finished, HookCallbackRequest};
 use aruna_rust_api::api::storage::models::v2::generic_resource::Resource;
 use aruna_rust_api::api::storage::models::v2::relation::Relation as RelationEnum;
-use aruna_rust_api::api::storage::models::v2::{InternalRelation, InternalRelationVariant, KeyValue, KeyValueVariant, Relation, RelationDirection, ResourceVariant};
+use aruna_rust_api::api::storage::models::v2::{
+    InternalRelation, InternalRelationVariant, KeyValue, KeyValueVariant, Relation,
+    RelationDirection, ResourceVariant,
+};
 use aruna_rust_api::api::storage::services::v2::ModifyRelationsRequest;
 use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::config::Credentials;
@@ -19,8 +22,8 @@ use reqwest::Client;
 use tokio::fs;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
-use uuid::Uuid;
 use urlencoding::encode;
+use uuid::Uuid;
 
 pub const CHUNK_SIZE: usize = 10_485_760;
 pub const MULTIPART_THRESHOLD: usize = 104_857_600;
@@ -177,27 +180,26 @@ impl GfbioWebhook {
         let origin = dlurl.origin().unicode_serialization();
         let host = dlurl
             .host()
+            .map(|h| h.to_string())
             .ok_or_else(|| format!("Invalid presigned download url"))?;
+        let (bucket, cleaned_host) = host
+            .split_once('.')
+            .ok_or_else(|| format!("No bucket set in host"))?;
 
         info!("Origin: {:?}", origin);
+
         info!("Host: {:?}", host);
 
         let endpoint_url = match dlurl.port() {
-            Some(port) => format!("{}://{}:{}", origin, host, port),
-            None => format!("{}://{}", origin, host),
+            Some(port) => format!("{}://{}:{}", dlurl.scheme(), cleaned_host, port),
+            None => format!("{}://{}", dlurl.scheme(), cleaned_host),
         };
 
         info!("Using endpoint URL: {}", endpoint_url);
 
-        let Some(path) = dlurl.path().strip_prefix("/") else {
+        let Some(key) = dlurl.path().strip_prefix("/") else {
             return Err(format!("Invalid path in presigned download url").into());
         };
-
-        info!("Using path: {}", path);
-
-        let (bucket, key) = path
-            .split_once('/')
-            .ok_or_else(|| format!("Invalid path in presigned download url"))?;
 
         info!("Bucket: {}, Key: {}", bucket, key);
 
@@ -310,23 +312,19 @@ impl GfbioWebhook {
             hook_id: hook.hook_id.clone(),
             object_id: object_id.clone(),
             pubkey_serial: hook.pubkey_serial.clone(),
-            status: Some(Status::Finished(
-                Finished {
-                    add_key_values: vec![KeyValue {
-                        key: "TRANSFORMED_BY_GFBIO".to_string(),
-                        value: "success".to_string(),
-                        variant: KeyValueVariant::Label as i32,
-                    }],
-                    remove_key_values: vec![],
-                },
-            )),
+            status: Some(Status::Finished(Finished {
+                add_key_values: vec![KeyValue {
+                    key: "TRANSFORMED_BY_GFBIO".to_string(),
+                    value: "success".to_string(),
+                    variant: KeyValueVariant::Label as i32,
+                }],
+                remove_key_values: vec![],
+            })),
             ..Default::default()
         };
 
-        let mut hook_client = HooksServiceClient::with_interceptor(
-            self.channel.clone(),
-            interceptor.clone()
-        );
+        let mut hook_client =
+            HooksServiceClient::with_interceptor(self.channel.clone(), interceptor.clone());
 
         let request = tonic::Request::new(callback_request);
         match hook_client.hook_callback(request).await {
@@ -632,7 +630,10 @@ impl GfbioWebhook {
         let job_id = job.job_id.clone();
         let result_file = job.result_file.clone();
 
-        info!("Fetching result data for job_id: {}, result_file: {}", job_id, result_file);
+        info!(
+            "Fetching result data for job_id: {}, result_file: {}",
+            job_id, result_file
+        );
 
         self.fetch_result_data(hook, &job_id, &result_file)
             .await
