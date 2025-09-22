@@ -129,7 +129,6 @@ impl GfbioWebhook {
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
         let url = format!("{}/results/{}/{}", self.gfbio_base_url, job_id, result_file);
 
-        println!("Fetching result from: {}", url);
         info!("Fetching result from: {}", url);
 
         let response = self
@@ -281,7 +280,6 @@ impl GfbioWebhook {
             .await?
             .into_inner();
         let json_response: serde_json::Value = serde_json::to_value(response)?;
-        println!("Relation modify response: {:?}", json_response);
         info!("Relation modify response: {:?}", json_response);
 
         let callback_request = HookCallbackRequest {
@@ -310,11 +308,9 @@ impl GfbioWebhook {
         let request = tonic::Request::new(callback_request);
         match hook_client.hook_callback(request).await {
             Ok(response) => {
-                println!("Hook callback response: {:?}", response);
                 info!("Hook callback response: {:?}", response);
             }
             Err(e) => {
-                eprintln!("Error sending hook callback: {}", e);
                 error!("Error sending hook callback: {}", e);
             }
         }
@@ -576,6 +572,7 @@ impl GfbioWebhook {
         &self,
         hook: Hook,
     ) -> Result<Json<JobResponse>, (StatusCode, Json<ErrorResponse>)> {
+        info!("Received hook: {:?}", hook);
         let Some(download_url) = hook.download.clone() else {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -600,6 +597,8 @@ impl GfbioWebhook {
             }
         };
 
+        info!("GFBio response: {:?}", gfbio_response);
+
         let job = self.create_job_from_response(
             gfbio_response,
             &download_url,
@@ -609,6 +608,8 @@ impl GfbioWebhook {
 
         let job_id = job.job_id.clone();
         let result_file = job.result_file.clone();
+
+        info!("Fetching result data for job_id: {}, result_file: {}", job_id, result_file);
 
         self.fetch_result_data(hook, &job_id, &result_file)
             .await
