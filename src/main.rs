@@ -1,10 +1,10 @@
 use crate::webhook::GfbioWebhook;
-use axum::{Json, Router};
-use axum::routing::{get, post};
-use dotenvy::dotenv;
-use std::sync::Arc;
 use axum::extract::Path;
 use axum::http::HeaderMap;
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use dotenvy::dotenv;
+use std::sync::Arc;
 use tonic::transport::{Channel, ClientTlsConfig};
 use tower_http::cors::CorsLayer;
 use tracing::Level;
@@ -48,12 +48,9 @@ async fn debug_route(
     );
 }
 
-
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     // Load environment variables from .env file
     dotenv().ok();
@@ -69,14 +66,22 @@ async fn main() {
     let t_id = dotenvy::var("TRANSFORMATION_ID").unwrap_or("5".to_string());
 
     // TODO: enable TLS for production deployment
-    //let tls_config = ClientTlsConfig::new();
     let aruna_server_address = dotenvy::var("ARUNA_SERVER_ADDRESS").expect("No aruna server set");
-    println!("Server Address: {}:{}", server_address, service_port);
+
     println!("Aruna Server Address: {}", aruna_server_address);
-    let endpoint = Channel::from_shared(aruna_server_address)
-        .unwrap();
-        //.tls_config(tls_config)
-        //.unwrap();
+    let endpoint = if aruna_server_address.starts_with("https") {
+        let tls_config = ClientTlsConfig::new();
+
+        let endpoint = Channel::from_shared(aruna_server_address)
+            .unwrap()
+            .tls_config(tls_config)
+            .unwrap();
+        endpoint
+    } else {
+        let endpoint = Channel::from_shared(aruna_server_address).unwrap();
+        endpoint
+    };
+    println!("Server Address: {}:{}", server_address, service_port);
     let channel = endpoint.connect().await.unwrap();
 
     let webhook = GfbioWebhook::with_config(t_id, api_base_url.clone(), temp_dir.clone(), channel);
