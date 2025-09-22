@@ -1,10 +1,11 @@
+use aruna_rust_api::api::hooks::services::v2::hook_callback_request::Status;
+use aruna_rust_api::api::hooks::services::v2::{Finished, HookCallbackRequest};
+use aruna_rust_api::api::hooks::services::v2::hooks_service_client::HooksServiceClient;
 use crate::job::Job;
 use crate::models::{ClientInterceptor, ErrorResponse, Hook, JobResponse, TransformationParams};
 use aruna_rust_api::api::storage::models::v2::generic_resource::Resource;
 use aruna_rust_api::api::storage::models::v2::relation::Relation as RelationEnum;
-use aruna_rust_api::api::storage::models::v2::{
-    InternalRelation, InternalRelationVariant, Relation, RelationDirection, ResourceVariant,
-};
+use aruna_rust_api::api::storage::models::v2::{InternalRelation, InternalRelationVariant, KeyValue, KeyValueVariant, Relation, RelationDirection, ResourceVariant};
 use aruna_rust_api::api::storage::services::v2::ModifyRelationsRequest;
 use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::config::Credentials;
@@ -156,6 +157,7 @@ impl GfbioWebhook {
         let dlurl = reqwest::Url::parse(
             &hook
                 .download
+                .clone()
                 .ok_or_else(|| format!("Got no download url from hook"))?,
         )?;
         let origin = dlurl.origin().unicode_serialization();
@@ -182,7 +184,7 @@ impl GfbioWebhook {
         let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 
         let (multipart, trigger_object) = match hook.object {
-            Resource::Object(r) => (r.content_len as usize >= MULTIPART_THRESHOLD, r.id),
+            Resource::Object(r) => (r.content_len as usize >= MULTIPART_THRESHOLD, r.id.clone()),
             _ => {
                 return Err(format!("Invalid hook triggered").into());
             }
@@ -250,16 +252,16 @@ impl GfbioWebhook {
             .ok_or_else(|| format!("Invalid etag provided"))?;
 
         let interceptor = ClientInterceptor {
-            api_token: hook.token,
+            api_token: hook.token.clone(),
         };
         let mut client =
         aruna_rust_api::api::storage::services::v2::relations_service_client::RelationsServiceClient::with_interceptor(
             self.channel.clone(),
-            interceptor
+            interceptor.clone()
         );
         let response = client
             .modify_relations(ModifyRelationsRequest {
-                resource_id: object_id,
+                resource_id: object_id.clone(),
                 add_relations: vec![Relation {
                     relation: Some(RelationEnum::Internal(InternalRelation {
                         resource_id: trigger_object,
@@ -274,6 +276,46 @@ impl GfbioWebhook {
             .await?
             .into_inner();
         let json_response: serde_json::Value = serde_json::to_value(response)?;
+        println!("Relation modify response: {:?}", json_response);
+
+        let callback_request = HookCallbackRequest {
+            secret: hook.secret.clone(),
+            hook_id: hook.hook_id.clone(),
+            object_id: object_id.clone(),
+            pubkey_serial: hook.pubkey_serial.clone(),
+            status: Some(Status::Finished(
+                Finished {
+                    add_key_values: vec![KeyValue {
+                        key: "TRANSFORMED_BY_GFBIO".to_string(),
+                        value: "success".to_string(),
+                        variant: KeyValueVariant::Label as i32,
+                    }],
+                    remove_key_values: vec![],
+                },
+            )),
+            ..Default::default()
+        };
+
+        let mut hook_client = HooksServiceClient::with_interceptor(
+            self.channel.clone(),
+            interceptor.clone()
+        );
+
+        let request = tonic::Request::new(callback_request);
+        match hook_client.hook_callback(request).await {
+            Ok(response) => {
+                println!("Hook callback response: {:?}", response);
+            }
+            Err(e) => {
+                eprintln!("Error sending hook callback: {}", e);
+            }
+        }
+
+        let json_response: serde_json::Value = serde_json::json!({
+            "object_id": object_id,
+            "status": "relation_and_callback_done"
+        });
+
         Ok(json_response)
     }
 

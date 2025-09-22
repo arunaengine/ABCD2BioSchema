@@ -44,12 +44,14 @@ async fn main() {
     let temp_dir = dotenvy::var("TEMP_DIR").expect("TEMP_DIR must be set");
     let t_id = dotenvy::var("TRANSFORMATION_ID").unwrap_or("5".to_string());
 
-    let tls_config = ClientTlsConfig::new();
+    // TODO: enable TLS for production deployment
+    //let tls_config = ClientTlsConfig::new();
     let aruna_server_address = dotenvy::var("ARUNA_SERVER_ADDRESS").expect("No aruna server set");
+    println!("{}", aruna_server_address.as_str());
     let endpoint = Channel::from_shared(aruna_server_address)
-        .unwrap()
-        .tls_config(tls_config)
         .unwrap();
+        //.tls_config(tls_config)
+        //.unwrap();
     let channel = endpoint.connect().await.unwrap();
 
     let webhook = GfbioWebhook::with_config(t_id, api_base_url.clone(), temp_dir.clone(), channel);

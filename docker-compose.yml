@@ -8,7 +8,7 @@ services:
     container_name: abcd2bioschema
     #restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "5000:5000"
     environment:
       - RUST_LOG=info
       - GFBIO_BASE_URL=https://transformation.gfbio.org/api
@@ -16,11 +16,13 @@ services:
     volumes:
       - abcd_temp:/app/temp
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    env_file:
+      - .env
 
 volumes:
   abcd_temp:

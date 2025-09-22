@@ -7,7 +7,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
+
+# Set the PROTOC environment variable to ensure it is found during build
+ENV PROTOC=/usr/bin/protoc
 
 # Copy Cargo files first for caching
 COPY Cargo.toml Cargo.lock ./
@@ -56,10 +60,10 @@ USER gfbio
 RUN ls -la /app/abcd2bioschema
 RUN file /app/abcd2bioschema
 
-EXPOSE 3000
+EXPOSE 5000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:3000/health || exit 1
+  CMD curl -f http://localhost:5000/health || exit 1
 
 CMD ["./abcd2bioschema"]
