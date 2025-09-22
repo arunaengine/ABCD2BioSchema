@@ -18,8 +18,9 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use tokio::fs;
 use tonic::transport::Channel;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use uuid::Uuid;
+use urlencoding::encode;
 
 pub const CHUNK_SIZE: usize = 10_485_760;
 pub const MULTIPART_THRESHOLD: usize = 104_857_600;
@@ -97,9 +98,12 @@ impl GfbioWebhook {
         &self,
         input_file_url: &str,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+        let encoded_input_file_url = encode(input_file_url);
+        debug!("Input File URL: {}", input_file_url);
+        debug!("Encoded input file URL: {}", encoded_input_file_url);
         let query_url = format!(
-            "{}/transform?transformation={}&input_file_url={}&input_file_zipped=false",
-            self.gfbio_base_url, self.transformation_id, input_file_url
+            "{}/transform?transformation={}&input_file_zipped=false&input_file_url={}",
+            self.gfbio_base_url, self.transformation_id, encoded_input_file_url
         );
 
         println!("Sending request to GFBio API: {}", query_url);
@@ -152,6 +156,9 @@ impl GfbioWebhook {
             None,
             "ARUNA_SERVER", // Endpoint name?
         );
+        info!("Using provided credentials to upload result data to S3-compatible storage");
+        info!("Credentials: {:?}", creds);
+
         let config = aws_config::defaults(BehaviorVersion::v2024_03_28())
             .credentials_provider(creds)
             .load()
@@ -164,26 +171,42 @@ impl GfbioWebhook {
                 .clone()
                 .ok_or_else(|| format!("Got no download url from hook"))?,
         )?;
+
+        info!("Parsed download URL: {:?}", dlurl);
+
         let origin = dlurl.origin().unicode_serialization();
         let host = dlurl
             .host()
             .ok_or_else(|| format!("Invalid presigned download url"))?;
 
+        info!("Origin: {:?}", origin);
+        info!("Host: {:?}", host);
+
         let endpoint_url = match dlurl.port() {
             Some(port) => format!("{}://{}:{}", origin, host, port),
             None => format!("{}://{}", origin, host),
         };
+
+        info!("Using endpoint URL: {}", endpoint_url);
+
         let Some(path) = dlurl.path().strip_prefix("/") else {
             return Err(format!("Invalid path in presigned download url").into());
         };
+
+        info!("Using path: {}", path);
+
         let (bucket, key) = path
             .split_once('/')
             .ok_or_else(|| format!("Invalid path in presigned download url"))?;
+
+        info!("Bucket: {}, Key: {}", bucket, key);
 
         let s3_config = aws_sdk_s3::config::Builder::from(&config)
             .region(Region::new("RegionOne"))
             .endpoint_url(endpoint_url.to_string())
             .build();
+
+        info!("S3 config: {:?}", s3_config);
 
         let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 

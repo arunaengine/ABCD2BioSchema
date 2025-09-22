@@ -1,6 +1,6 @@
 use crate::webhook::GfbioWebhook;
 use axum::extract::Path;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use dotenvy::dotenv;
@@ -26,19 +26,14 @@ pub fn create_router(state: Arc<Handler>) -> Router {
         .route("/transform", post(service::upload_and_transform))
         .route("/transform/url", post(service::url_transform))
         .route("/job/{job_id}", get(service::get_job_status))
+        .fallback(fallback)
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
-async fn debug_route(
-    headers: HeaderMap,
-    Path(path): Path<String>,
-    value: Option<Json<serde_json::Value>>,
-) {
-    info!(
-        "Debug route called path {:#?} with value: {:#?}\nHeader: {:#?}",
-        path, value, headers
-    );
+async fn fallback(uri: Uri) -> (StatusCode, String) {
+    let body = format!("No route for {}", uri);
+    (StatusCode::NOT_FOUND, body)
 }
 
 #[tokio::main]
