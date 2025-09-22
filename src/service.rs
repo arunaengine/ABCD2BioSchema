@@ -24,6 +24,7 @@ pub(crate) async fn url_transform(
     State(state): State<Arc<Handler>>,
     Json(request): Json<Hook>,
 ) -> Result<Json<JobResponse>, (StatusCode, Json<ErrorResponse>)> {
+    println!("Got a request");
     info!("/transform/url endpoint called");
     info!("Received Request: {:?}", request);
     state.webhook.handle_url_transformation(request).await
