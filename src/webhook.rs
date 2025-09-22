@@ -18,6 +18,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use tokio::fs;
 use tonic::transport::Channel;
+use tracing::{error, info};
 use uuid::Uuid;
 
 pub const CHUNK_SIZE: usize = 10_485_760;
@@ -102,6 +103,7 @@ impl GfbioWebhook {
         );
 
         println!("Sending request to GFBio API: {}", query_url);
+        info!("Sending request to GFBio API: {}", query_url);
 
         let response = self
             .client
@@ -114,6 +116,7 @@ impl GfbioWebhook {
             let json_response: serde_json::Value = response.json().await?;
             Ok(json_response)
         } else {
+            error!("GFBio API error: {}", response.status());
             Err(format!("GFBio API error: {}", response.status()).into())
         }
     }
@@ -127,6 +130,7 @@ impl GfbioWebhook {
         let url = format!("{}/results/{}/{}", self.gfbio_base_url, job_id, result_file);
 
         println!("Fetching result from: {}", url);
+        info!("Fetching result from: {}", url);
 
         let response = self
             .client
@@ -136,6 +140,7 @@ impl GfbioWebhook {
             .await?;
 
         if !response.status().is_success() {
+            error!("Failed to fetch result data: {}", response.status());
             return Err(format!("Failed to fetch result data: {}", response.status()).into());
         }
 
@@ -277,6 +282,7 @@ impl GfbioWebhook {
             .into_inner();
         let json_response: serde_json::Value = serde_json::to_value(response)?;
         println!("Relation modify response: {:?}", json_response);
+        info!("Relation modify response: {:?}", json_response);
 
         let callback_request = HookCallbackRequest {
             secret: hook.secret.clone(),
@@ -305,9 +311,11 @@ impl GfbioWebhook {
         match hook_client.hook_callback(request).await {
             Ok(response) => {
                 println!("Hook callback response: {:?}", response);
+                info!("Hook callback response: {:?}", response);
             }
             Err(e) => {
                 eprintln!("Error sending hook callback: {}", e);
+                error!("Error sending hook callback: {}", e);
             }
         }
 

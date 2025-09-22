@@ -1,11 +1,14 @@
 use crate::webhook::GfbioWebhook;
-use axum::Router;
+use axum::{Json, Router};
 use axum::routing::{get, post};
 use dotenvy::dotenv;
 use std::sync::Arc;
+use axum::extract::Path;
+use axum::http::HeaderMap;
 use tonic::transport::{Channel, ClientTlsConfig};
 use tower_http::cors::CorsLayer;
-use tracing::info;
+use tracing::Level;
+use tracing::{error, info};
 use tracing_subscriber;
 
 mod job;
@@ -23,13 +26,34 @@ pub fn create_router(state: Arc<Handler>) -> Router {
         .route("/transform", post(service::upload_and_transform))
         .route("/transform/url", post(service::url_transform))
         .route("/job/{job_id}", get(service::get_job_status))
+        .route(
+            "/*path",
+            get(debug_route)
+                .post(debug_route)
+                .put(debug_route)
+                .delete(debug_route),
+        )
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
+async fn debug_route(
+    headers: HeaderMap,
+    Path(path): Path<String>,
+    value: Option<Json<serde_json::Value>>,
+) {
+    info!(
+        "Debug route called path {:#?} with value: {:#?}\nHeader: {:#?}",
+        path, value, headers
+    );
+}
+
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .init();
 
     // Load environment variables from .env file
     dotenv().ok();
@@ -47,7 +71,8 @@ async fn main() {
     // TODO: enable TLS for production deployment
     //let tls_config = ClientTlsConfig::new();
     let aruna_server_address = dotenvy::var("ARUNA_SERVER_ADDRESS").expect("No aruna server set");
-    println!("{}", aruna_server_address.as_str());
+    println!("Server Address: {}:{}", server_address, service_port);
+    println!("Aruna Server Address: {}", aruna_server_address);
     let endpoint = Channel::from_shared(aruna_server_address)
         .unwrap();
         //.tls_config(tls_config)
