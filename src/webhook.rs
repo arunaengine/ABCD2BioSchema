@@ -1,3 +1,4 @@
+use std::error::Error;
 use crate::job::Job;
 use crate::models::{ClientInterceptor, ErrorResponse, Hook, JobResponse, TransformationParams};
 use aruna_rust_api::api::hooks::services::v2::hook_callback_request::Status;
@@ -18,11 +19,14 @@ use axum::extract::Multipart;
 use axum::http::StatusCode;
 use chrono::FixedOffset;
 use futures_util::StreamExt;
-use reqwest::Client;
+use reqwest::{Client, Url};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use serde_json::Value;
 use tokio::fs;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
-use urlencoding::encode;
+use tracing::field::debug;
+use urlencoding::{decode, encode};
 use uuid::Uuid;
 
 pub const CHUNK_SIZE: usize = 10_485_760;
@@ -101,16 +105,21 @@ impl GfbioWebhook {
         &self,
         input_file_url: &str,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
-        let encoded_input_file_url = encode(input_file_url);
-        debug!("Input File URL: {}", input_file_url);
-        debug!("Encoded input file URL: {}", encoded_input_file_url);
+
+        let decoded_input_file_url = decode(input_file_url).unwrap();
+        debug!("Input File URL: {:?}", input_file_url);
+        debug!("Decoded input file URL: {:?}", decoded_input_file_url);
+
+        let encoded_input_file_url = encode(decoded_input_file_url.as_ref());
+
+        debug!("New input file URL: {:?}", encoded_input_file_url);
+
         let query_url = format!(
-            "{}/transform?transformation={}&input_file_zipped=false&input_file_url={}",
+            "{}/transform?transformation={}&version=2&input_file_url={}",
             self.gfbio_base_url, self.transformation_id, encoded_input_file_url
         );
 
-        println!("Sending request to GFBio API: {}", query_url);
-        info!("Sending request to GFBio API: {}", query_url);
+        info!("Sending request to GFBio API: {:?}", query_url);
 
         let response = self
             .client
@@ -159,8 +168,8 @@ impl GfbioWebhook {
             None,
             "ARUNA_SERVER", // Endpoint name?
         );
-        info!("Using provided credentials to upload result data to S3-compatible storage");
-        info!("Credentials: {:?}", creds);
+        debug!("Using provided credentials to upload result data to S3-compatible storage");
+        debug!("\tCredentials: {:?}", creds);
 
         let config = aws_config::defaults(BehaviorVersion::v2024_03_28())
             .credentials_provider(creds)
@@ -175,7 +184,7 @@ impl GfbioWebhook {
                 .ok_or_else(|| format!("Got no download url from hook"))?,
         )?;
 
-        info!("Parsed download URL: {:?}", dlurl);
+        debug!("Parsed download URL: {:?}", dlurl);
 
         let origin = dlurl.origin().unicode_serialization();
         let host = dlurl
@@ -186,29 +195,28 @@ impl GfbioWebhook {
             .split_once('.')
             .ok_or_else(|| format!("No bucket set in host"))?;
 
-        info!("Origin: {:?}", origin);
-
-        info!("Host: {:?}", host);
+        debug!("Origin: {:?}", origin);
+        debug!("Host: {:?}", host);
 
         let endpoint_url = match dlurl.port() {
             Some(port) => format!("{}://{}:{}", dlurl.scheme(), cleaned_host, port),
             None => format!("{}://{}", dlurl.scheme(), cleaned_host),
         };
 
-        info!("Using endpoint URL: {}", endpoint_url);
+        debug!("Using endpoint URL: {:?}", endpoint_url);
 
         let Some(key) = dlurl.path().strip_prefix("/") else {
             return Err(format!("Invalid path in presigned download url").into());
         };
 
-        info!("Bucket: {}, Key: {}", bucket, key);
+        debug!("Bucket: {}\nKey: {}", bucket, key);
 
         let s3_config = aws_sdk_s3::config::Builder::from(&config)
             .region(Region::new("RegionOne"))
             .endpoint_url(endpoint_url.to_string())
             .build();
 
-        info!("S3 config: {:?}", s3_config);
+        debug!("S3 config: {:?}", s3_config);
 
         let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 
@@ -305,7 +313,8 @@ impl GfbioWebhook {
             .await?
             .into_inner();
         let json_response: serde_json::Value = serde_json::to_value(response)?;
-        info!("Relation modify response: {:?}", json_response);
+
+        debug!("Relation modify response: {:?}", json_response);
 
         let callback_request = HookCallbackRequest {
             secret: hook.secret.clone(),
@@ -586,6 +595,8 @@ impl GfbioWebhook {
             &filename,
         );
 
+        debug!("Job from GFBio Response: {:?}", job);
+
         Ok(Json(JobResponse { job }))
     }
 
@@ -613,7 +624,7 @@ impl GfbioWebhook {
         let gfbio_response = match self.send_gfbio_request(&download_url).await {
             Ok(response) => Some(response),
             Err(e) => {
-                eprintln!("GFBio API error: {}", e);
+                error!("GFBio API error: {}", e);
                 None
             }
         };
@@ -631,7 +642,7 @@ impl GfbioWebhook {
         let result_file = job.result_file.clone();
 
         info!(
-            "Fetching result data for job_id: {}, result_file: {}",
+            "Fetching result data for\n\tjob_id: {:?}\n\tresult_file: {:?}",
             job_id, result_file
         );
 

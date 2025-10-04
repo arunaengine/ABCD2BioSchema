@@ -7,7 +7,7 @@ use dotenvy::dotenv;
 use std::sync::Arc;
 use tonic::transport::{Channel, ClientTlsConfig};
 use tower_http::cors::CorsLayer;
-use tracing::Level;
+use tracing::{debug, Level};
 use tracing::{error, info};
 use tracing_subscriber;
 
@@ -38,7 +38,7 @@ async fn fallback(uri: Uri) -> (StatusCode, String) {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    tracing_subscriber::fmt().with_max_level(Level::DEBUG).init();
 
     // Load environment variables from .env file
     dotenv().ok();
@@ -53,10 +53,9 @@ async fn main() {
     let temp_dir = dotenvy::var("TEMP_DIR").expect("TEMP_DIR must be set");
     let t_id = dotenvy::var("TRANSFORMATION_ID").unwrap_or("5".to_string());
 
-    // TODO: enable TLS for production deployment
     let aruna_server_address = dotenvy::var("ARUNA_SERVER_ADDRESS").expect("No aruna server set");
 
-    println!("Aruna Server Address: {}", aruna_server_address);
+    debug!("Aruna Server Address: {}", aruna_server_address);
     let endpoint = if aruna_server_address.starts_with("https") {
         let tls_config = ClientTlsConfig::new();
 
@@ -69,7 +68,7 @@ async fn main() {
         let endpoint = Channel::from_shared(aruna_server_address).unwrap();
         endpoint
     };
-    println!("Server Address: {}:{}", server_address, service_port);
+    debug!("Server Address: {}:{}", server_address, service_port);
     let channel = endpoint.connect().await.unwrap();
 
     let webhook = GfbioWebhook::with_config(t_id, api_base_url.clone(), temp_dir.clone(), channel);
@@ -83,15 +82,10 @@ async fn main() {
         "ABCD2BioSchema Service running on {}:{}",
         server_address, service_port
     );
-
-    println!(
-        "ABCD2BioSchema Service running on {}:{}",
-        server_address, service_port
-    );
-    println!("Endpoints:");
-    println!("\tPOST\t/transform\t- Upload XML and start transformation");
-    println!("\tPOST\t/transform/url\t- Send XML via URL and start transformation");
-    println!("\tGET\t/health\t\t- Health check endpoint");
+    info!("Endpoints:");
+    info!("\tPOST\t/transform\t- Upload XML and start transformation");
+    info!("\tPOST\t/transform/url\t- Send XML via URL and start transformation");
+    info!("\tGET\t/health\t\t- Health check endpoint");
 
     axum::serve(listener, app).await.unwrap();
 }
