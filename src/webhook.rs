@@ -3,7 +3,7 @@ use crate::job::Job;
 use crate::models::{ClientInterceptor, ErrorResponse, Hook, JobResponse, TransformationParams};
 use aruna_rust_api::api::hooks::services::v2::hook_callback_request::Status;
 use aruna_rust_api::api::hooks::services::v2::hooks_service_client::HooksServiceClient;
-use aruna_rust_api::api::hooks::services::v2::{Finished, HookCallbackRequest};
+use aruna_rust_api::api::hooks::services::v2::{Finished, HookCallbackRequest, Error as HookError};
 use aruna_rust_api::api::storage::models::v2::generic_resource::Resource;
 use aruna_rust_api::api::storage::models::v2::relation::Relation as RelationEnum;
 use aruna_rust_api::api::storage::models::v2::{
@@ -24,7 +24,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde_json::Value;
 use tokio::fs;
 use tonic::transport::Channel;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing::field::debug;
 use urlencoding::{decode, encode};
 use uuid::Uuid;
@@ -66,11 +66,83 @@ impl GfbioWebhook {
         }
     }
 
+    async fn send_hook_callback(
+        &self,
+        hook: &Hook,
+        status: Status,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let callback_request = HookCallbackRequest {
+            secret: hook.secret.clone(),
+            hook_id: hook.hook_id.clone(),
+            object_id: match &hook.object {
+                Resource::Object(r) => r.id.clone(),
+                Resource::Dataset(r) => r.id.clone(),
+                Resource::Collection(r) => r.id.clone(),
+                Resource::Project(r) => r.id.clone(),
+            },
+            pubkey_serial: hook.pubkey_serial.clone(),
+            status: Some(status),
+            ..Default::default()
+        };
+
+        let interceptor = ClientInterceptor {
+            api_token: hook.token.clone(),
+        };
+
+        let mut hook_client =
+            HooksServiceClient::with_interceptor(self.channel.clone(), interceptor);
+
+        let request = tonic::Request::new(callback_request);
+        match hook_client.hook_callback(request).await {
+            Ok(response) => {
+                info!("Hook callback successfully sent: {:?}", response);
+                Ok(())
+            }
+            Err(e) => {
+                error!("Error sending hook callback: {}", e);
+                Err(format!("Failed to send hook callback: {}", e).into())
+            }
+        }
+    }
+
+    async fn send_error_callback(
+        &self,
+        hook: &Hook,
+        error_message: String,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        warn!("Sending error callback: {}", error_message);
+
+        let status = Status::Error(HookError {
+            error: error_message,
+        });
+
+        self.send_hook_callback(hook, status).await
+    }
+
+    async fn send_success_callback(
+        &self,
+        hook: &Hook,
+        object_id: String,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        info!("Sending success callback for object: {}", object_id);
+
+        let status = Status::Finished(Finished {
+            add_key_values: vec![KeyValue {
+                key: "TRANSFORMED_BY_GFBIO".to_string(),
+                value: "success".to_string(),
+                variant: KeyValueVariant::Label as i32,
+            }],
+            remove_key_values: vec![],
+        });
+
+        self.send_hook_callback(hook, status).await
+    }
+
     async fn save_temp_file(
         &self,
         filename: &str,
         content: &[u8],
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<String, Box<dyn Error + Send + Sync>> {
         fs::create_dir_all(&self.temp_dir).await?;
 
         let file_id = Uuid::new_v4().to_string();
@@ -85,7 +157,7 @@ impl GfbioWebhook {
     async fn download_xml(
         &self,
         url: &str,
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
         let response = self
             .client
             .get(url)
@@ -104,7 +176,7 @@ impl GfbioWebhook {
     async fn send_gfbio_request(
         &self,
         input_file_url: &str,
-    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Value, Box<dyn Error + Send + Sync>> {
 
         let decoded_input_file_url = decode(input_file_url).unwrap();
         debug!("Input File URL: {:?}", input_file_url);
@@ -129,7 +201,7 @@ impl GfbioWebhook {
             .await?;
 
         if response.status().is_success() {
-            let json_response: serde_json::Value = response.json().await?;
+            let json_response: Value = response.json().await?;
             Ok(json_response)
         } else {
             error!("GFBio API error: {}", response.status());
@@ -139,10 +211,10 @@ impl GfbioWebhook {
 
     async fn fetch_result_data(
         &self,
-        hook: Hook,
+        hook: &Hook,
         job_id: &str,
         result_file: &str,
-    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<String, Box<dyn Error + Send + Sync>> {
         let url = format!("{}/results/{}/{}", self.gfbio_base_url, job_id, result_file);
 
         info!("Fetching result from: {}", url);
@@ -161,22 +233,22 @@ impl GfbioWebhook {
 
         let creds = Credentials::new(
             hook.access_key
+                .clone()
                 .ok_or_else(|| format!("Got no access key from hook"))?,
             hook.secret_key
+                .clone()
                 .ok_or_else(|| format!("Got no secret key from hook"))?,
             None,
             None,
-            "ARUNA_SERVER", // Endpoint name?
+            "ARUNA_SERVER",
         );
         debug!("Using provided credentials to upload result data to S3-compatible storage");
-        debug!("\tCredentials: {:?}", creds);
 
         let config = aws_config::defaults(BehaviorVersion::v2024_03_28())
             .credentials_provider(creds)
             .load()
             .await;
 
-        // TODO: Parse from download url
         let dlurl = reqwest::Url::parse(
             &hook
                 .download
@@ -220,7 +292,7 @@ impl GfbioWebhook {
 
         let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 
-        let (multipart, trigger_object) = match hook.object {
+        let (multipart, trigger_object) = match &hook.object {
             Resource::Object(r) => (r.content_len as usize >= MULTIPART_THRESHOLD, r.id.clone()),
             _ => {
                 return Err(format!("Invalid hook triggered").into());
@@ -251,12 +323,13 @@ impl GfbioWebhook {
                     .set_key(Some(key.to_string()))
                     .body(chunked_stream.into())
                     .upload_id(&upload_id)
+                    .part_number(counter)
                     .send()
                     .await?;
                 builder = builder.parts(
                     CompletedPart::builder()
                         .e_tag(part.e_tag().ok_or_else(|| format!("No etag returned"))?)
-                        .part_number(counter.clone())
+                        .part_number(counter)
                         .build(),
                 );
             }
@@ -282,6 +355,7 @@ impl GfbioWebhook {
                 .e_tag;
             etag
         };
+
         let object_id = etag
             .ok_or_else(|| format!("No etag returned"))?
             .strip_prefix("-")
@@ -292,10 +366,11 @@ impl GfbioWebhook {
             api_token: hook.token.clone(),
         };
         let mut client =
-        aruna_rust_api::api::storage::services::v2::relations_service_client::RelationsServiceClient::with_interceptor(
-            self.channel.clone(),
-            interceptor.clone()
-        );
+            aruna_rust_api::api::storage::services::v2::relations_service_client::RelationsServiceClient::with_interceptor(
+                self.channel.clone(),
+                interceptor.clone()
+            );
+
         let response = client
             .modify_relations(ModifyRelationsRequest {
                 resource_id: object_id.clone(),
@@ -312,50 +387,15 @@ impl GfbioWebhook {
             })
             .await?
             .into_inner();
-        let json_response: serde_json::Value = serde_json::to_value(response)?;
 
-        debug!("Relation modify response: {:?}", json_response);
+        debug!("Relation modify response: {:?}", response);
 
-        let callback_request = HookCallbackRequest {
-            secret: hook.secret.clone(),
-            hook_id: hook.hook_id.clone(),
-            object_id: object_id.clone(),
-            pubkey_serial: hook.pubkey_serial.clone(),
-            status: Some(Status::Finished(Finished {
-                add_key_values: vec![KeyValue {
-                    key: "TRANSFORMED_BY_GFBIO".to_string(),
-                    value: "success".to_string(),
-                    variant: KeyValueVariant::Label as i32,
-                }],
-                remove_key_values: vec![],
-            })),
-            ..Default::default()
-        };
-
-        let mut hook_client =
-            HooksServiceClient::with_interceptor(self.channel.clone(), interceptor.clone());
-
-        let request = tonic::Request::new(callback_request);
-        match hook_client.hook_callback(request).await {
-            Ok(response) => {
-                info!("Hook callback response: {:?}", response);
-            }
-            Err(e) => {
-                error!("Error sending hook callback: {}", e);
-            }
-        }
-
-        let json_response: serde_json::Value = serde_json::json!({
-            "object_id": object_id,
-            "status": "relation_and_callback_done"
-        });
-
-        Ok(json_response)
+        Ok(object_id)
     }
 
     fn create_job_from_response(
         &self,
-        gfbio_response: Option<serde_json::Value>,
+        gfbio_response: Option<Value>,
         input_file_url: &str,
         transformation_id: &str,
         filename: &str,
@@ -433,85 +473,6 @@ impl GfbioWebhook {
         format!("{}", timestamp.abs())
     }
 
-    // pub async fn handle_url_transformation(
-    //     &self,
-    //     request: TransformationRequest,
-    // ) -> Result<Json<JobResponse>, (StatusCode, Json<ErrorResponse>)> {
-    //     let transformation_id = request.transformation_id.unwrap_or_else(|| "5".to_string());
-
-    //     if !request.xml_url.starts_with("http") {
-    //         return Err((
-    //             StatusCode::BAD_REQUEST,
-    //             Json(ErrorResponse {
-    //                 error: "invalid_url".to_string(),
-    //                 message: "URL must start with http or https".to_string(),
-    //             }),
-    //         ));
-    //     }
-
-    //     let xml_content = self.download_xml(&request.xml_url).await.map_err(|e| {
-    //         (
-    //             StatusCode::BAD_REQUEST,
-    //             Json(ErrorResponse {
-    //                 error: "download_error".to_string(),
-    //                 message: format!("Failed to download XML: {}", e),
-    //             }),
-    //         )
-    //     })?;
-
-    //     if xml_content.is_empty() {
-    //         return Err((
-    //             StatusCode::BAD_REQUEST,
-    //             Json(ErrorResponse {
-    //                 error: "empty_file".to_string(),
-    //                 message: "Downloaded XML is empty".to_string(),
-    //             }),
-    //         ));
-    //     }
-
-    //     let filename = request
-    //         .xml_url
-    //         .split('/')
-    //         .last()
-    //         .unwrap_or("downloaded.xml")
-    //         .to_string();
-
-    //     let gfbio_response = match self
-    //         .send_gfbio_request(&request.xml_url, &transformation_id)
-    //         .await
-    //     {
-    //         Ok(response) => Some(response),
-    //         Err(e) => {
-    //             eprintln!("GFBio API error: {}", e);
-    //             None
-    //         }
-    //     };
-
-    //     let job = self.create_job_from_response(
-    //         gfbio_response,
-    //         &request.xml_url,
-    //         &transformation_id,
-    //         &filename,
-    //     );
-
-    //     let job_id = job.job_id.clone();
-    //     let result_file = job.result_file.clone();
-
-    //     self.fetch_result_data(&job_id, &result_file)
-    //         .await
-    //         .map_err(|e| {
-    //             (
-    //                 StatusCode::INTERNAL_SERVER_ERROR,
-    //                 Json(ErrorResponse {
-    //                     error: "result_fetch_error".to_string(),
-    //                     message: format!("Error fetching result data: {}", e),
-    //                 }),
-    //             )
-    //         })?;
-
-    //     Ok(Json(JobResponse { job }))
-    // }
-
     pub async fn handle_transformation(
         &self,
         mut multipart: Multipart,
@@ -583,7 +544,7 @@ impl GfbioWebhook {
         let gfbio_response = match self.send_gfbio_request(&temp_file_url).await {
             Ok(response) => Some(response),
             Err(e) => {
-                eprintln!("GFBio API error: {}", e);
+                error!("GFBio API error: {}", e);
                 None
             }
         };
@@ -605,15 +566,24 @@ impl GfbioWebhook {
         hook: Hook,
     ) -> Result<Json<JobResponse>, (StatusCode, Json<ErrorResponse>)> {
         info!("Received hook: {:?}", hook);
+
         let Some(download_url) = hook.download.clone() else {
+            let error_msg = "No download URL provided in hook".to_string();
+            error!("{}", error_msg);
+
+            if let Err(e) = self.send_error_callback(&hook, error_msg.clone()).await {
+                error!("Failed to send error callback: {}", e);
+            }
+
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: "empty_file".to_string(),
-                    message: "XML file is empty".to_string(),
+                    error: "missing_download_url".to_string(),
+                    message: error_msg,
                 }),
             ));
         };
+
         let filename = match hook.object.clone() {
             Resource::Project(r) => r.name,
             Resource::Collection(r) => r.name,
@@ -622,14 +592,27 @@ impl GfbioWebhook {
         };
 
         let gfbio_response = match self.send_gfbio_request(&download_url).await {
-            Ok(response) => Some(response),
+            Ok(response) => {
+                info!("GFBio response: {:?}", response);
+                Some(response)
+            }
             Err(e) => {
-                error!("GFBio API error: {}", e);
-                None
+                let error_msg = format!("GFBio API request failed: {}", e);
+                error!("{}", error_msg);
+
+                if let Err(callback_err) = self.send_error_callback(&hook, error_msg.clone()).await {
+                    error!("Failed to send error callback: {}", callback_err);
+                }
+
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: "gfbio_api_error".to_string(),
+                        message: error_msg,
+                    }),
+                ));
             }
         };
-
-        info!("GFBio response: {:?}", gfbio_response);
 
         let job = self.create_job_from_response(
             gfbio_response,
@@ -646,19 +629,40 @@ impl GfbioWebhook {
             job_id, result_file
         );
 
-        self.fetch_result_data(hook, &job_id, &result_file)
-            .await
-            .map_err(|e| {
-                (
+        match self.fetch_result_data(&hook, &job_id, &result_file).await {
+            Ok(object_id) => {
+                info!("Successfully fetched and uploaded result data. Object ID: {}", object_id);
+
+                if let Err(e) = self.send_success_callback(&hook, object_id).await {
+                    error!("Failed to send success callback: {}", e);
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: "callback_error".to_string(),
+                            message: format!("Transformation successful but callback failed: {}", e),
+                        }),
+                    ));
+                }
+
+                Ok(Json(JobResponse { job }))
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to fetch or upload result data: {}", e);
+                error!("{}", error_msg);
+
+                if let Err(callback_err) = self.send_error_callback(&hook, error_msg.clone()).await {
+                    error!("Failed to send error callback: {}", callback_err);
+                }
+
+                Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
                         error: "result_fetch_error".to_string(),
-                        message: format!("Error fetching result data: {}", e),
+                        message: error_msg,
                     }),
-                )
-            })?;
-
-        Ok(Json(JobResponse { job }))
+                ))
+            }
+        }
     }
 
     pub async fn get_job_status(
