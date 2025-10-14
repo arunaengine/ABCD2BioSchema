@@ -19,13 +19,11 @@ use axum::extract::Multipart;
 use axum::http::StatusCode;
 use chrono::FixedOffset;
 use futures_util::StreamExt;
-use reqwest::{Client, Url};
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::{Client};
 use serde_json::Value;
 use tokio::fs;
 use tonic::transport::Channel;
 use tracing::{debug, error, info, warn};
-use tracing::field::debug;
 use urlencoding::{decode, encode};
 use uuid::Uuid;
 
@@ -113,10 +111,52 @@ impl GfbioWebhook {
         warn!("Sending error callback: {}", error_message);
 
         let status = Status::Error(HookError {
-            error: error_message,
+            error: error_message.clone(),
         });
 
-        self.send_hook_callback(hook, status).await
+        let callback_request = HookCallbackRequest {
+            secret: hook.secret.clone(),
+            hook_id: hook.hook_id.clone(),
+            object_id: match &hook.object {
+                Resource::Object(r) => r.id.clone(),
+                Resource::Dataset(r) => r.id.clone(),
+                Resource::Collection(r) => r.id.clone(),
+                Resource::Project(r) => r.id.clone(),
+            },
+            pubkey_serial: hook.pubkey_serial.clone(),
+            status: Some(Status::Finished(Finished {
+                add_key_values: vec![KeyValue {
+                    key: "Error".to_string(),
+                    value: error_message.clone(),
+                    variant: KeyValueVariant::Label as i32,
+                }],
+                remove_key_values: vec![KeyValue {
+                    key: "ABCD".to_string(),
+                    value: "*".to_string(),
+                    variant: KeyValueVariant::Label as i32,
+                }],
+            })),
+            ..Default::default()
+        };
+
+        let interceptor = ClientInterceptor {
+            api_token: hook.token.clone(),
+        };
+
+        let mut hook_client =
+            HooksServiceClient::with_interceptor(self.channel.clone(), interceptor);
+
+        let request = tonic::Request::new(callback_request);
+        match hook_client.hook_callback(request).await {
+            Ok(response) => {
+                info!("Error callback successfully sent: {:?}", response);
+                Ok(())
+            }
+            Err(e) => {
+                error!("Error sending error callback: {}", e);
+                Err(format!("Failed to send error callback: {}", e).into())
+            }
+        }
     }
 
     async fn send_success_callback(
@@ -131,8 +171,16 @@ impl GfbioWebhook {
                 key: "TRANSFORMED_BY_GFBIO".to_string(),
                 value: "success".to_string(),
                 variant: KeyValueVariant::Label as i32,
+            }, KeyValue {
+                key: "BioSchema".to_string(),
+                value: "".to_string(),
+                variant: KeyValueVariant::Label as i32,
             }],
-            remove_key_values: vec![],
+            remove_key_values: vec![KeyValue {
+                key: "ABCD".to_string(),
+                value: "*".to_string(),
+                variant: KeyValueVariant::Label as i32,
+            }],
         });
 
         self.send_hook_callback(hook, status).await
@@ -186,10 +234,15 @@ impl GfbioWebhook {
 
         debug!("New input file URL: {:?}", encoded_input_file_url);
 
+        // TODO: Remove after testing
+        let test_url = encode("http://ww3.bgbm.org/tmp/bgbm_herbarium_small.xml");
+
         let query_url = format!(
             "{}/transform?transformation={}&version=2&input_file_url={}",
-            self.gfbio_base_url, self.transformation_id, encoded_input_file_url
+            self.gfbio_base_url, self.transformation_id, test_url   // TOOD: Change to encoded_input_file_url after testing
         );
+
+        info!("Using Test URL: {:?}", test_url);
 
         info!("Sending request to GFBio API: {:?}", query_url);
 
@@ -231,20 +284,23 @@ impl GfbioWebhook {
             return Err(format!("Failed to fetch result data: {}", response.status()).into());
         }
 
+        debug!("Successfully fetched result data from GFBio");
+
         let creds = Credentials::new(
             hook.access_key
                 .clone()
-                .ok_or_else(|| format!("Got no access key from hook"))?,
+                .ok_or_else(|| "Got no access key from hook".to_string())?,
             hook.secret_key
                 .clone()
-                .ok_or_else(|| format!("Got no secret key from hook"))?,
+                .ok_or_else(|| "Got no secret key from hook".to_string())?,
             None,
             None,
             "ARUNA_SERVER",
         );
+
         debug!("Using provided credentials to upload result data to S3-compatible storage");
 
-        let config = aws_config::defaults(BehaviorVersion::v2024_03_28())
+        let config = aws_config::defaults(BehaviorVersion::v2025_08_07())
             .credentials_provider(creds)
             .load()
             .await;
@@ -253,7 +309,7 @@ impl GfbioWebhook {
             &hook
                 .download
                 .clone()
-                .ok_or_else(|| format!("Got no download url from hook"))?,
+                .ok_or_else(|| "Got no download url from hook".to_string())?,
         )?;
 
         debug!("Parsed download URL: {:?}", dlurl);
@@ -262,26 +318,27 @@ impl GfbioWebhook {
         let host = dlurl
             .host()
             .map(|h| h.to_string())
-            .ok_or_else(|| format!("Invalid presigned download url"))?;
+            .ok_or_else(|| "Invalid presigned download url".to_string())?;
         let (bucket, cleaned_host) = host
             .split_once('.')
-            .ok_or_else(|| format!("No bucket set in host"))?;
+            .ok_or_else(|| "No bucket set in host".to_string())?;
 
         debug!("Origin: {:?}", origin);
         debug!("Host: {:?}", host);
+        debug!("Cleaned host: {:?}", cleaned_host);
 
         let endpoint_url = match dlurl.port() {
             Some(port) => format!("{}://{}:{}", dlurl.scheme(), cleaned_host, port),
             None => format!("{}://{}", dlurl.scheme(), cleaned_host),
         };
 
-        debug!("Using endpoint URL: {:?}", endpoint_url);
+        debug!("Using endpoint URL for S3 upload: {:?}", endpoint_url);
 
         let Some(key) = dlurl.path().strip_prefix("/") else {
-            return Err(format!("Invalid path in presigned download url").into());
+            return Err("Invalid path in presigned download url".to_string().into());
         };
 
-        debug!("Bucket: {}\nKey: {}", bucket, key);
+        debug!("S3 Upload Target:\n\tBucket: {}\n\tKey: {}", bucket, key);
 
         let s3_config = aws_sdk_s3::config::Builder::from(&config)
             .region(Region::new("RegionOne"))
@@ -292,91 +349,170 @@ impl GfbioWebhook {
 
         let s3_client = aws_sdk_s3::Client::from_conf(s3_config);
 
+        debug!("S3 client successfully created, beginning upload...");
+
         let (multipart, trigger_object) = match &hook.object {
             Resource::Object(r) => (r.content_len as usize >= MULTIPART_THRESHOLD, r.id.clone()),
             _ => {
-                return Err(format!("Invalid hook triggered").into());
+                return Err("Invalid hook triggered: not an object resource".to_string().into());
             }
         };
 
+        // -----------------------------------------
+        // UPLOAD SECTION
+        // -----------------------------------------
+
+        debug!(
+            "Starting S3 upload (multipart: {}) for job_id = {} and result_file = {}",
+            multipart, job_id, result_file
+        );
+
         let etag = if multipart {
-            let upload_id = s3_client
+            debug!("Creating multipart upload for key = {}", key);
+            let upload_id = match s3_client
                 .create_multipart_upload()
                 .set_bucket(Some(bucket.to_string()))
                 .set_key(Some(key.to_string()))
                 .send()
-                .await?
-                .upload_id()
-                .map(|id| id.to_string())
-                .ok_or_else(|| format!("No upload id created"))?;
+                .await
+            {
+                Ok(resp) => {
+                    let id = resp.upload_id().map(|s| s.to_string()).unwrap_or_default();
+                    debug!("Multipart upload created: upload_id = {}", id);
+                    id
+                }
+                Err(e) => {
+                    error!("Failed to create multipart upload: {:?}", e);
+                    return Err(format!("Failed to create multipart upload: {}", e).into());
+                }
+            };
 
             let mut stream = response.bytes_stream().chunks(CHUNK_SIZE).into_inner();
-
             let mut builder = CompletedMultipartUpload::builder();
             let mut counter = 0;
+
             while let Some(bytes) = stream.next().await {
                 counter += 1;
-                let chunked_stream = bytes?;
-                let part = s3_client
-                    .upload_part()
-                    .set_bucket(Some(bucket.to_string()))
-                    .set_key(Some(key.to_string()))
-                    .body(chunked_stream.into())
-                    .upload_id(&upload_id)
-                    .part_number(counter)
-                    .send()
-                    .await?;
-                builder = builder.parts(
-                    CompletedPart::builder()
-                        .e_tag(part.e_tag().ok_or_else(|| format!("No etag returned"))?)
-                        .part_number(counter)
-                        .build(),
-                );
+                debug!("Uploading part {}...", counter);
+
+                match bytes {
+                    Ok(chunked_stream) => {
+                        match s3_client
+                            .upload_part()
+                            .set_bucket(Some(bucket.to_string()))
+                            .set_key(Some(key.to_string()))
+                            .body(chunked_stream.into())
+                            .upload_id(&upload_id)
+                            .part_number(counter)
+                            .send()
+                            .await
+                        {
+                            Ok(part) => {
+                                debug!(
+                                    "Part {} uploaded successfully (etag = {:?})",
+                                    counter,
+                                    part.e_tag()
+                                );
+                                builder = builder.parts(
+                                    CompletedPart::builder()
+                                        .e_tag(part.e_tag().unwrap_or_default())
+                                        .part_number(counter)
+                                        .build(),
+                                );
+                            }
+                            Err(e) => {
+                                error!("Failed to upload part {}: {:?}", counter, e);
+                                return Err(format!("Failed to upload part {}: {}", counter, e).into());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error reading chunk {}: {:?}", counter, e);
+                        return Err(format!("Error reading chunk {}: {}", counter, e).into());
+                    }
+                }
             }
 
-            let etag = s3_client
+            debug!("All parts uploaded successfully, completing multipart upload...");
+
+            match s3_client
                 .complete_multipart_upload()
                 .set_bucket(Some(bucket.to_string()))
                 .set_key(Some(key.to_string()))
                 .upload_id(&upload_id)
                 .multipart_upload(builder.build())
                 .send()
-                .await?
-                .e_tag;
-            etag
+                .await
+            {
+                Ok(resp) => {
+                    debug!("Multipart upload completed successfully");
+                    resp.e_tag
+                }
+                Err(e) => {
+                    error!("Failed to complete multipart upload: {:?}", e);
+                    return Err(format!("Failed to complete multipart upload: {}", e).into());
+                }
+            }
         } else {
-            let etag = s3_client
+            debug!("Performing single PUT upload for key = {}", key);
+
+            match s3_client
                 .put_object()
                 .body(response.bytes().await?.into())
                 .set_bucket(Some(bucket.to_string()))
                 .set_key(Some(key.to_string()))
                 .send()
-                .await?
-                .e_tag;
-            etag
+                .await
+            {
+                Ok(resp) => {
+                    debug!("Single PUT upload completed successfully");
+                    resp.e_tag
+                }
+                Err(e) => {
+                    error!("Failed to upload object via single PUT: {:?}", e);
+                    return Err(format!("Failed to upload object via single PUT: {}", e).into());
+                }
+            }
         };
 
+        // -----------------------------------------
+        // END UPLOAD SECTION
+        // -----------------------------------------
+
+        debug!("S3 upload completed, etag = {:?}", etag);
+
         let object_id = etag
-            .ok_or_else(|| format!("No etag returned"))?
+            .ok_or_else(|| "No etag returned".to_string())?
             .strip_prefix("-")
             .map(|p| p.to_string())
-            .ok_or_else(|| format!("Invalid etag provided"))?;
+            .ok_or_else(|| "Invalid etag provided".to_string())?;
+
+        debug!("Using etag-derived object_id={}", object_id);
+
+        // -----------------------------------------
+        // RELATION MODIFICATION SECTION
+        // -----------------------------------------
+
+        debug!("Starting Aruna relation modification for object_id = {}", object_id);
 
         let interceptor = ClientInterceptor {
             api_token: hook.token.clone(),
         };
+
         let mut client =
             aruna_rust_api::api::storage::services::v2::relations_service_client::RelationsServiceClient::with_interceptor(
                 self.channel.clone(),
                 interceptor.clone()
             );
 
-        let response = client
+        debug!("Sending modify_relations request...");
+
+        match client
             .modify_relations(ModifyRelationsRequest {
                 resource_id: object_id.clone(),
                 add_relations: vec![Relation {
                     relation: Some(RelationEnum::Internal(InternalRelation {
-                        resource_id: trigger_object,
+                        resource_id: trigger_object.clone(),
                         resource_variant: ResourceVariant::Object as i32,
                         defined_variant: InternalRelationVariant::Origin as i32,
                         custom_variant: None,
@@ -385,12 +521,17 @@ impl GfbioWebhook {
                 }],
                 remove_relations: vec![],
             })
-            .await?
-            .into_inner();
-
-        debug!("Relation modify response: {:?}", response);
-
-        Ok(object_id)
+            .await
+        {
+            Ok(resp) => {
+                debug!("Relation modify response received: {:?}", resp);
+                Ok(object_id)
+            }
+            Err(e) => {
+                error!("Failed to modify relations: {:?}", e);
+                Err(format!("Failed to modify relations for object {}: {}", object_id, e).into())
+            }
+        }
     }
 
     fn create_job_from_response(
