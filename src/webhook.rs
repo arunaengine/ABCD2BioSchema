@@ -130,11 +130,7 @@ impl GfbioWebhook {
                     value: error_message.clone(),
                     variant: KeyValueVariant::Label as i32,
                 }],
-                remove_key_values: vec![KeyValue {
-                    key: "ABCD".to_string(),
-                    value: "*".to_string(),
-                    variant: KeyValueVariant::Label as i32,
-                }],
+                remove_key_values: vec![],
             })),
             ..Default::default()
         };
@@ -171,16 +167,8 @@ impl GfbioWebhook {
                 key: "TRANSFORMED_BY_GFBIO".to_string(),
                 value: "success".to_string(),
                 variant: KeyValueVariant::Label as i32,
-            }, KeyValue {
-                key: "BioSchema".to_string(),
-                value: "".to_string(),
-                variant: KeyValueVariant::Label as i32,
             }],
-            remove_key_values: vec![KeyValue {
-                key: "ABCD".to_string(),
-                value: "*".to_string(),
-                variant: KeyValueVariant::Label as i32,
-            }],
+            remove_key_values: vec![],
         });
 
         self.send_hook_callback(hook, status).await
