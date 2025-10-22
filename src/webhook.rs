@@ -338,7 +338,9 @@ impl GfbioWebhook {
             return Err("Invalid path in presigned download url".to_string().into());
         };
 
-        debug!("S3 Upload Target:\n\tBucket: {}\n\tKey: {}", bucket, key);
+        let new_key = key.replace(".xml", ".json");
+
+        debug!("S3 Upload Target:\n\tBucket: {}\n\tKey: {}", bucket, new_key);
 
         let s3_config = aws_sdk_s3::config::Builder::from(&config)
             .region(Region::new("RegionOne"))
@@ -368,11 +370,11 @@ impl GfbioWebhook {
         );
 
         let etag = if multipart {
-            debug!("Creating multipart upload for key = {}", key);
+            debug!("Creating multipart upload for key = {}", new_key);
             let upload_id = match s3_client
                 .create_multipart_upload()
                 .set_bucket(Some(bucket.to_string()))
-                .set_key(Some(key.to_string()))
+                .set_key(Some(new_key.to_string()))
                 .send()
                 .await
             {
@@ -400,7 +402,7 @@ impl GfbioWebhook {
                         match s3_client
                             .upload_part()
                             .set_bucket(Some(bucket.to_string()))
-                            .set_key(Some(key.to_string()))
+                            .set_key(Some(new_key.to_string()))
                             .body(chunked_stream.into())
                             .upload_id(&upload_id)
                             .part_number(counter)
@@ -438,7 +440,7 @@ impl GfbioWebhook {
             match s3_client
                 .complete_multipart_upload()
                 .set_bucket(Some(bucket.to_string()))
-                .set_key(Some(key.to_string()))
+                .set_key(Some(new_key.to_string()))
                 .upload_id(&upload_id)
                 .multipart_upload(builder.build())
                 .send()
@@ -454,13 +456,13 @@ impl GfbioWebhook {
                 }
             }
         } else {
-            debug!("Performing single PUT upload for key = {}", key);
+            debug!("Performing single PUT upload for key = {}", new_key);
 
             match s3_client
                 .put_object()
                 .body(response.bytes().await?.into())
                 .set_bucket(Some(bucket.to_string()))
-                .set_key(Some(key.to_string()))
+                .set_key(Some(new_key.to_string()))
                 .send()
                 .await
             {
