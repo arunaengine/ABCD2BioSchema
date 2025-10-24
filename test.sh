@@ -1,33 +1,37 @@
 #!/bin/bash
 
-TOKEN="eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6IjEifQ.eyJpc3MiOiJhcnVuYSIsInN1YiI6IjAxSDgxOUczWk1LNURDOVE1UEQxOE45U1hCIiwiYXVkIjoiYXJ1bmEiLCJleHAiOjE3OTA3MjY0MDAsInRpZCI6IjAxSzVIMDY2WENLRk42RFlQMVFIOTkxSEhUIn0.bs7OQlJt-I549QAOh3Py0gVR8Zi6c4Bo-je7kOwNFbbsG543XbRzR5MkmnrB7UqHWd0xz4EdNMd2dsZcRO9_CQ"
-
-PROJECT="01K5H08Z6PP8CKQ2EAWJW56NM6"
+TOKEN=""              # Bearer token with appropriate permissions
+PROJECT=""            # The project ID of the project to which the hook will be attached
+TOKEN_EXPIRATION=""   # Note this is a unix timestamp in milliseconds
 
 curl -X 'POST' \
-  'http://localhost:8080/v2/hooks' \
-  -H 'accept: application/json' \
-  -H 'Authorization: Bearer ${TOKEN}' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "name": "example",
-  "trigger": {
-    "triggerType": "TRIGGER_TYPE_OBJECT_FINISHED",
-    "filters": [
-      {
-        "name": ".*"
+    'http://localhost:8080/v2/hooks' \
+    -H 'accept: application/json' \
+    -H 'Authorization: Bearer ${TOKEN}' \
+    -H 'Content-Type: application/json' \
+    -d '{
+    "name": "ABCD-to-BioSchema",
+    "trigger": {
+      "triggerType": "TRIGGER_TYPE_OBJECT_FINISHED",
+      "filters": [
+        {
+          "keyValue": {
+            "key": "^ABCD$",
+            "value": ".*",
+            "variant": "KEY_VALUE_VARIANT_LABEL"
+          }
+        }
+      ]
+    },
+    "hook": {
+      "externalHook": {
+        "url": "http://abcd2bioschema-service.aruna.svc.cluster.local:5000/transform/url",
+        "method": "METHOD_POST"
       }
-    ]
-  },
-  "hook": {
-    "externalHook": {
-      "url": "http://0.0.0.0:1234",
-      "method": "METHOD_POST"
-    }
-  },
-  "timeout": "1884509437",
-  "projectIds": [
-    "${PROJECT}"
-  ],
-  "description": "abcd converter"
+    },
+    "timeout": "${TOKEN_EXPIRATION}",
+    "projectIds": [
+      "${PROJECT}"
+    ],
+    "description": "Transforms ABCD metadata into BioSchema."
 }'
