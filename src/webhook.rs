@@ -245,7 +245,7 @@ impl GfbioWebhook {
         }
     }
 
-    async fn fetch_result_data(
+    async fn fetch_result_data_and_upload(
         &self,
         hook: &Hook,
         job_id: &str,
@@ -853,7 +853,7 @@ impl GfbioWebhook {
             job_id, result_file
         );
 
-        match self.fetch_result_data(&hook, &job_id, &result_file).await {
+        match self.fetch_result_data_and_upload(&hook, &job_id, &result_file).await {
             Ok(object_id) => {
                 info!("Successfully fetched and uploaded result data. Object ID: {}", object_id);
 
