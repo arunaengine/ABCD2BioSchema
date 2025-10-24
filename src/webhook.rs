@@ -6,11 +6,9 @@ use aruna_rust_api::api::hooks::services::v2::hooks_service_client::HooksService
 use aruna_rust_api::api::hooks::services::v2::{Finished, HookCallbackRequest, Error as HookError};
 use aruna_rust_api::api::storage::models::v2::generic_resource::Resource;
 use aruna_rust_api::api::storage::models::v2::relation::Relation as RelationEnum;
-use aruna_rust_api::api::storage::models::v2::{
-    InternalRelation, InternalRelationVariant, KeyValue, KeyValueVariant, Relation,
-    RelationDirection, ResourceVariant,
-};
-use aruna_rust_api::api::storage::services::v2::ModifyRelationsRequest;
+use aruna_rust_api::api::storage::models::v2::{DataClass, Hash, Hashalgorithm, InternalRelation, InternalRelationVariant, KeyValue, KeyValueVariant, Relation, RelationDirection, ResourceVariant};
+use aruna_rust_api::api::storage::services::v2::{CreateObjectRequest, ModifyRelationsRequest};
+use aruna_rust_api::api::storage::services::v2::create_object_request::Parent;
 use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::config::Credentials;
 use aws_sdk_s3::types::{CompletedMultipartUpload, CompletedPart};
@@ -357,6 +355,146 @@ impl GfbioWebhook {
             multipart, job_id, result_file
         );
 
+        // Create Object
+
+        let object = &hook.object;
+
+        let orig_desc = match object {
+            Resource::Object(r) => r.description.clone(),
+            Resource::Dataset(r) => r.description.clone(),
+            Resource::Collection(r) => r.description.clone(),
+            Resource::Project(r) => r.description.clone(),
+        };
+
+        let new_desc = format!("This object represents a biological collection entity derived from an ABCD record and transformed into a BioSchema-compliant format.\
+                                            \n\nOriginal description of ABCD file:\n{}", orig_desc);
+
+        let orig_key_values = match object {
+            Resource::Object(r) => r.key_values.clone(),
+            Resource::Dataset(r) => r.key_values.clone(),
+            Resource::Collection(r) => r.key_values.clone(),
+            Resource::Project(r) => r.key_values.clone(),
+        };
+
+        let filtered_key_values: Vec<KeyValue> = orig_key_values
+            .into_iter()
+            .filter(|kv| kv.key != "ABCD")
+            .collect();
+
+        let bioschema_key_values = vec![KeyValue {
+            key: "TRANSFORMED_BY_GFBIO".to_string(),
+            value: "success".to_string(),
+            variant: KeyValueVariant::Label as i32,
+        }, KeyValue {
+            key: "BioSchema".to_string(),
+            value: "true".to_string(),
+            variant: KeyValueVariant::Label as i32,
+        }];
+
+        let new_key_values: Vec<KeyValue> = filtered_key_values
+            .into_iter()
+            .chain(bioschema_key_values)
+            .collect();
+
+        let request = CreateObjectRequest {
+            name: new_key.to_string(),
+            title: match object {
+                Resource::Object(r) => format!("{} BioSchema", r.title.clone()),
+                Resource::Dataset(r) => format!("{} BioSchema", r.title.clone()),
+                Resource::Collection(r) => format!("{} BioSchema", r.title.clone()),
+                Resource::Project(r) => format!("{} BioSchema", r.title.clone()),
+            },
+            description: new_desc,
+            key_values: new_key_values,
+            relations: vec![Relation {
+                relation: Some(RelationEnum::Internal(InternalRelation {
+                    resource_id: trigger_object.clone(),
+                    resource_variant: ResourceVariant::Object as i32,
+                    defined_variant: InternalRelationVariant::Origin as i32,
+                    custom_variant: None,
+                    direction: RelationDirection::Outbound as i32,
+                })),
+            }],
+            data_class: match object {
+                Resource::Object(r) => r.data_class.clone(),
+                Resource::Dataset(r) => r.data_class.clone(),
+                Resource::Collection(r) => r.data_class.clone(),
+                Resource::Project(r) => r.data_class.clone(),
+            },
+            hashes: vec![],
+            metadata_license_tag: match object {
+                Resource::Object(r) => r.metadata_license_tag.clone(),
+                Resource::Dataset(r) => r.metadata_license_tag.clone(),
+                Resource::Collection(r) => r.metadata_license_tag.clone(),
+                Resource::Project(r) => r.metadata_license_tag.clone(),
+            },
+            data_license_tag: match object {
+                Resource::Object(r) => r.data_license_tag.clone(),
+                _ => "CC-BY-4.0".to_string(),
+            },
+            parent: match object {
+                Resource::Object(r) => r
+                    .relations.clone()
+                    .iter()
+                    .find_map(|rel| {
+                        if let Some(RelationEnum::Internal(internal)) = &rel.relation {
+                            if internal.direction == RelationDirection::Inbound as i32 {
+                                match internal.resource_variant {
+                                    v if v == ResourceVariant::Project as i32 => {
+                                        Some(Parent::ProjectId(internal.resource_id.clone()))
+                                    }
+                                    v if v == ResourceVariant::Collection as i32 => {
+                                        Some(Parent::CollectionId(internal.resource_id.clone()))
+                                    }
+                                    v if v == ResourceVariant::Dataset as i32 => {
+                                        Some(Parent::DatasetId(internal.resource_id.clone()))
+                                    }
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }),
+                Resource::Dataset(r) => None,
+                Resource::Collection(r) => None,
+                Resource::Project(r) => None,
+            },
+            authors: match object {
+                Resource::Object(r) => r.authors.clone(),
+                Resource::Dataset(r) => r.authors.clone(),
+                Resource::Collection(r) => r.authors.clone(),
+                Resource::Project(r) => r.authors.clone(),
+            },
+        };
+
+        debug!("Requesting object creation: {:#?}", request);
+
+        let interceptor = ClientInterceptor {
+            api_token: hook.token.clone(),
+        };
+
+        let mut client =
+            aruna_rust_api::api::storage::services::v2::object_service_client::ObjectServiceClient::with_interceptor(
+                self.channel.clone(),
+                interceptor.clone()
+            );
+
+        // Send the request to the Aruna instance gRPC endpoint
+        match client
+            .create_object(request)
+            .await
+        {
+            Ok(res) => {
+                debug!("Object creation request sent successfully");
+            }
+            Err(e) => {
+                error!("Failed to send object creation request: {:?}", e);
+            }
+        }
+
         let etag = if multipart {
             debug!("Creating multipart upload for key = {}", new_key);
             let upload_id = match s3_client
@@ -478,50 +616,8 @@ impl GfbioWebhook {
             .ok_or_else(|| "Invalid etag provided".to_string())?;
 
         debug!("Using etag-derived object_id={}", object_id);
+        Ok(object_id)
 
-        // -----------------------------------------
-        // RELATION MODIFICATION SECTION
-        // -----------------------------------------
-
-        debug!("Starting Aruna relation modification for object_id = {}", object_id);
-
-        let interceptor = ClientInterceptor {
-            api_token: hook.token.clone(),
-        };
-
-        let mut client =
-            aruna_rust_api::api::storage::services::v2::relations_service_client::RelationsServiceClient::with_interceptor(
-                self.channel.clone(),
-                interceptor.clone()
-            );
-
-        debug!("Sending modify_relations request...");
-
-        match client
-            .modify_relations(ModifyRelationsRequest {
-                resource_id: object_id.clone(),
-                add_relations: vec![Relation {
-                    relation: Some(RelationEnum::Internal(InternalRelation {
-                        resource_id: trigger_object.clone(),
-                        resource_variant: ResourceVariant::Object as i32,
-                        defined_variant: InternalRelationVariant::Origin as i32,
-                        custom_variant: None,
-                        direction: RelationDirection::Outbound as i32,
-                    })),
-                }],
-                remove_relations: vec![],
-            })
-            .await
-        {
-            Ok(resp) => {
-                debug!("Relation modify response received: {:?}", resp);
-                Ok(object_id)
-            }
-            Err(e) => {
-                error!("Failed to modify relations: {:?}", e);
-                Err(format!("Failed to modify relations for object {}: {}", object_id, e).into())
-            }
-        }
     }
 
     fn create_job_from_response(
