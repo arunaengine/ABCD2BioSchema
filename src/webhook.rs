@@ -220,15 +220,12 @@ impl GfbioWebhook {
 
         debug!("New input file URL: {:?}", encoded_input_file_url);
 
-        // TODO: Remove after testing
-        let test_url = encode("http://ww3.bgbm.org/tmp/bgbm_herbarium_small.xml");
-
         let query_url = format!(
             "{}/transform?transformation={}&version=2&input_file_url={}",
-            self.gfbio_base_url, self.transformation_id, test_url   // TOOD: Change to encoded_input_file_url after testing
+            self.gfbio_base_url, self.transformation_id, encoded_input_file_url
         );
 
-        info!("Using Test URL: {:?}", test_url);
+        info!("Using Test URL: {:?}", encoded_input_file_url);
 
         info!("Sending request to GFBio API: {:?}", query_url);
 
