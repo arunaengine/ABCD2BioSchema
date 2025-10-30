@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use crate::Handler;
-use crate::models::{ErrorResponse, Hook, JobResponse, TransformationParams, TransformationRequest};
+use crate::models::{ErrorResponse, Hook, JobResponse, TransformationParams};
 use axum::Json;
 use axum::extract::{Multipart, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use dotenvy::dotenv;
-use tracing::{debug, info};
+use tracing::{debug};
 
 pub(crate) async fn upload_and_transform(
     State(state): State<Arc<Handler>>,

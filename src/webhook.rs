@@ -3,11 +3,11 @@ use crate::job::Job;
 use crate::models::{ClientInterceptor, ErrorResponse, Hook, JobResponse, TransformationParams};
 use aruna_rust_api::api::hooks::services::v2::hook_callback_request::Status;
 use aruna_rust_api::api::hooks::services::v2::hooks_service_client::HooksServiceClient;
-use aruna_rust_api::api::hooks::services::v2::{Finished, HookCallbackRequest, Error as HookError};
+use aruna_rust_api::api::hooks::services::v2::{Finished, HookCallbackRequest};
 use aruna_rust_api::api::storage::models::v2::generic_resource::Resource;
 use aruna_rust_api::api::storage::models::v2::relation::Relation as RelationEnum;
-use aruna_rust_api::api::storage::models::v2::{DataClass, Hash, Hashalgorithm, InternalRelation, InternalRelationVariant, KeyValue, KeyValueVariant, Relation, RelationDirection, ResourceVariant};
-use aruna_rust_api::api::storage::services::v2::{CreateObjectRequest, ModifyRelationsRequest};
+use aruna_rust_api::api::storage::models::v2::{InternalRelation, InternalRelationVariant, KeyValue, KeyValueVariant, Relation, RelationDirection, ResourceVariant};
+use aruna_rust_api::api::storage::services::v2::{CreateObjectRequest};
 use aruna_rust_api::api::storage::services::v2::create_object_request::Parent;
 use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::config::Credentials;
@@ -108,10 +108,6 @@ impl GfbioWebhook {
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         warn!("Sending error callback: {}", error_message);
 
-        let status = Status::Error(HookError {
-            error: error_message.clone(),
-        });
-
         let callback_request = HookCallbackRequest {
             secret: hook.secret.clone(),
             hook_id: hook.hook_id.clone(),
@@ -186,25 +182,6 @@ impl GfbioWebhook {
         fs::write(&temp_path, content).await?;
 
         Ok(format!("file://{}", temp_path))
-    }
-
-    async fn download_xml(
-        &self,
-        url: &str,
-    ) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        let response = self
-            .client
-            .get(url)
-            .header("User-Agent", "GFBio-Webhook/1.0")
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            let content = response.bytes().await?;
-            Ok(content.to_vec())
-        } else {
-            Err(format!("Failed to download XML: {}", response.status()).into())
-        }
     }
 
     async fn send_gfbio_request(
@@ -455,9 +432,9 @@ impl GfbioWebhook {
                             None
                         }
                     }),
-                Resource::Dataset(r) => None,
-                Resource::Collection(r) => None,
-                Resource::Project(r) => None,
+                Resource::Dataset(_) => None,
+                Resource::Collection(_) => None,
+                Resource::Project(_) => None,
             },
             authors: match object {
                 Resource::Object(r) => r.authors.clone(),
@@ -484,7 +461,7 @@ impl GfbioWebhook {
             .create_object(request)
             .await
         {
-            Ok(res) => {
+            Ok(_) => {
                 debug!("Object creation request sent successfully");
             }
             Err(e) => {
@@ -690,11 +667,6 @@ impl GfbioWebhook {
             combined_download: format!("{}.zip", job_id),
             job_expiration_date: now + chrono::Duration::days(1),
         }
-    }
-
-    fn generate_job_id(&self) -> String {
-        let timestamp = chrono::Utc::now().timestamp();
-        format!("{}", timestamp.abs())
     }
 
     pub async fn handle_transformation(

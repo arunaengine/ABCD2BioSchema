@@ -9,13 +9,6 @@ pub struct TransformationParams {
     pub version_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct TransformationRequest {
-    pub xml_url: String,
-    pub transformation_id: Option<String>,
-    pub version_id: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct JobResponse {
     pub job: Job,
@@ -56,6 +49,6 @@ impl tonic::service::Interceptor for ClientInterceptor {
             AsciiMetadataValue::try_from(format!("Bearer {}", self.api_token.as_str())).unwrap(),
         );
 
-        return Ok(mut_req);
+        Ok(mut_req)
     }
 }

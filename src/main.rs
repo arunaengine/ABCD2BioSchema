@@ -1,14 +1,13 @@
 use crate::webhook::GfbioWebhook;
-use axum::extract::Path;
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{StatusCode, Uri};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Router};
 use dotenvy::dotenv;
 use std::sync::Arc;
 use tonic::transport::{Channel, ClientTlsConfig};
 use tower_http::cors::CorsLayer;
 use tracing::{debug, Level};
-use tracing::{error, info};
+use tracing::{info};
 use tracing_subscriber;
 
 mod job;
