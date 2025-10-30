@@ -1,14 +1,13 @@
 use crate::webhook::GfbioWebhook;
+use axum::Router;
 use axum::http::{StatusCode, Uri};
 use axum::routing::{get, post};
-use axum::{Router};
 use dotenvy::dotenv;
 use std::sync::Arc;
 use tonic::transport::{Channel, ClientTlsConfig};
 use tower_http::cors::CorsLayer;
-use tracing::{debug, Level};
-use tracing::{info};
-use tracing_subscriber;
+use tracing::info;
+use tracing::{Level, debug};
 
 mod job;
 mod models;
@@ -37,7 +36,9 @@ async fn fallback(uri: Uri) -> (StatusCode, String) {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_max_level(Level::DEBUG).init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::DEBUG)
+        .init();
 
     // Load environment variables from .env file
     dotenv().ok();
@@ -58,14 +59,12 @@ async fn main() {
     let endpoint = if aruna_server_address.starts_with("https") {
         let tls_config = ClientTlsConfig::new();
 
-        let endpoint = Channel::from_shared(aruna_server_address)
+        Channel::from_shared(aruna_server_address)
             .unwrap()
             .tls_config(tls_config)
-            .unwrap();
-        endpoint
+            .unwrap()
     } else {
-        let endpoint = Channel::from_shared(aruna_server_address).unwrap();
-        endpoint
+        Channel::from_shared(aruna_server_address).unwrap()
     };
     debug!("Server Address: {}:{}", server_address, service_port);
     let channel = endpoint.connect().await.unwrap();

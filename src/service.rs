@@ -7,7 +7,7 @@ use axum::extract::{Multipart, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use dotenvy::dotenv;
-use tracing::{debug};
+use tracing::debug;
 
 pub(crate) async fn upload_and_transform(
     State(state): State<Arc<Handler>>,

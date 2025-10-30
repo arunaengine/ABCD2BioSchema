@@ -1,7 +1,7 @@
+use crate::job::Job;
 use aruna_rust_api::api::storage::models::v2::generic_resource::Resource;
 use serde::{Deserialize, Serialize};
 use tonic::metadata::{AsciiMetadataKey, AsciiMetadataValue};
-use crate::job::Job;
 
 #[derive(Debug, Deserialize)]
 pub struct TransformationParams {
@@ -20,7 +20,6 @@ pub struct ErrorResponse {
     pub message: String,
 }
 
-
 #[derive(Debug, Deserialize)]
 pub struct Hook {
     pub hook_id: String,
@@ -33,12 +32,11 @@ pub struct Hook {
     pub secret_key: Option<String>,
 }
 
-
 #[derive(Clone)]
 pub struct ClientInterceptor {
     pub api_token: String,
 }
-// Implement a request interceptor which always adds 
+// Implement a request interceptor which always adds
 //  the authorization header with a specific API token to all requests
 impl tonic::service::Interceptor for ClientInterceptor {
     fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
