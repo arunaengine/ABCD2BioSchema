@@ -1,48 +1,89 @@
-use axum::{Router};
+use crate::webhook::GfbioWebhook;
+use axum::Router;
+use axum::http::{StatusCode, Uri};
 use axum::routing::{get, post};
-use tower_http::cors::CorsLayer;
 use dotenvy::dotenv;
-use tracing::{info};
-use tracing_subscriber;
+use std::sync::Arc;
+use tonic::transport::{Channel, ClientTlsConfig};
+use tower_http::cors::CorsLayer;
+use tracing::info;
+use tracing::{Level, debug};
 
 mod job;
+mod models;
 mod service;
 mod webhook;
-mod models;
 
-pub fn create_router() -> Router {
+pub struct Handler {
+    pub webhook: GfbioWebhook,
+}
+
+pub fn create_router(state: Arc<Handler>) -> Router {
     Router::new()
         .route("/health", get(service::health_check))
         .route("/transform", post(service::upload_and_transform))
         .route("/transform/url", post(service::url_transform))
         .route("/job/{job_id}", get(service::get_job_status))
+        .fallback(fallback)
         .layer(CorsLayer::permissive())
+        .with_state(state)
+}
+
+async fn fallback(uri: Uri) -> (StatusCode, String) {
+    let body = format!("No route for {}", uri);
+    (StatusCode::NOT_FOUND, body)
 }
 
 #[tokio::main]
 async fn main() {
-
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::DEBUG)
+        .init();
 
     // Load environment variables from .env file
     dotenv().ok();
 
     let server_address = dotenvy::var("SERVER_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let service_port = dotenvy::var("SERVICE_PORT").unwrap_or_else(|_| "3000".to_string()).parse::<u16>().expect("Please select a valid port number of type u16");
+    let service_port = dotenvy::var("SERVICE_PORT")
+        .unwrap_or_else(|_| "3000".to_string())
+        .parse::<u16>()
+        .expect("Please select a valid port number of type u16");
 
-    let app = create_router();
+    let api_base_url = dotenvy::var("GFBIO_BASE_URL").expect("GFBIO_BASE_URL must be set");
+    let temp_dir = dotenvy::var("TEMP_DIR").expect("TEMP_DIR must be set");
+    let t_id = dotenvy::var("TRANSFORMATION_ID").unwrap_or("5".to_string());
 
+    let aruna_server_address = dotenvy::var("ARUNA_SERVER_ADDRESS").expect("No aruna server set");
+
+    debug!("Aruna Server Address: {}", aruna_server_address);
+    let endpoint = if aruna_server_address.starts_with("https") {
+        let tls_config = ClientTlsConfig::new();
+
+        Channel::from_shared(aruna_server_address)
+            .unwrap()
+            .tls_config(tls_config)
+            .unwrap()
+    } else {
+        Channel::from_shared(aruna_server_address).unwrap()
+    };
+    debug!("Server Address: {}:{}", server_address, service_port);
+    let channel = endpoint.connect().await.unwrap();
+
+    let webhook = GfbioWebhook::with_config(t_id, api_base_url.clone(), temp_dir.clone(), channel);
+    let state = Arc::new(Handler { webhook });
+    let app = create_router(state);
     let listener = tokio::net::TcpListener::bind(format!("{}:{}", server_address, service_port))
         .await
         .unwrap();
 
-    info!("ABCD2BioSchema Service running on {}:{}", server_address, service_port);
-
-    println!("ABCD2BioSchema Service running on {}:{}", server_address, service_port);
-    println!("Endpoints:");
-    println!("\tPOST\t/transform\t- Upload XML and start transformation");
-    println!("\tPOST\t/transform/url\t- Send XML via URL and start transformation");
-    println!("\tGET\t/health\t\t- Health check endpoint");
+    info!(
+        "ABCD2BioSchema Service running on {}:{}",
+        server_address, service_port
+    );
+    info!("Endpoints:");
+    info!("\tPOST\t/transform\t- Upload XML and start transformation");
+    info!("\tPOST\t/transform/url\t- Send XML via URL and start transformation");
+    info!("\tGET\t/health\t\t- Health check endpoint");
 
     axum::serve(listener, app).await.unwrap();
 }

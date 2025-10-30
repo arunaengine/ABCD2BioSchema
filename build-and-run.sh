@@ -14,7 +14,7 @@ echo -e "${GREEN}ABCD2BioSchema Service Docker Build und Deploy${NC}"
 
 cleanup() {
     echo -e "${YELLOW}Cleanup...${NC}"
-    docker-compose down
+    docker compose down
 }
 
 build_image() {
@@ -31,7 +31,7 @@ run_tests() {
 
 deploy() {
     echo -e "${GREEN}Deploying Service...${NC}"
-    docker-compose up -d
+    docker compose up -d
     echo -e "${GREEN}✓ Service deployed!${NC}"
 }
 
@@ -43,7 +43,7 @@ check_health() {
     attempt=1
 
     while [ $attempt -le $max_attempts ]; do
-        if curl -f http://0.0.0.0:3000/health > /dev/null 2>&1; then
+        if curl -f http://0.0.0.0:5000/health > /dev/null 2>&1; then
             echo -e "${GREEN}✓ Service is running!${NC}"
             return 0
         fi
@@ -59,7 +59,7 @@ check_health() {
 
 show_logs() {
     echo -e "${GREEN}Service Logs:${NC}"
-    docker-compose logs -f abcd_webhooker
+    docker compose logs -f abcd_webhooker
 }
 
 
@@ -107,9 +107,9 @@ echo -e "${GREEN}Done!${NC}"
 if [ "${1:-deploy}" = "deploy" ] || [ "${1}" = "restart" ]; then
     echo ""
     echo -e "${GREEN}📡 Service Endpoints:${NC}"
-    echo "  Health Check: http://localhost:3000/health"
-    echo "  Transform (Upload): POST http://localhost:3000/transform"
-    echo "  Transform (URL): POST http://localhost:3000/transform/url"
+    echo "  Health Check: http://localhost:5000/health"
+    echo "  Transform (Upload): POST http://localhost:5000/transform"
+    echo "  Transform (URL): POST http://localhost:5000/transform/url"
     echo ""
     echo -e "${GREEN}🐳 Docker Commands:${NC}"
     echo "  Show Logs: docker-compose logs -f"
