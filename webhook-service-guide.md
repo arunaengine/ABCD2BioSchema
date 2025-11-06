@@ -90,7 +90,7 @@ Your Webhook Service
 ```
 ┌────────────┐     ┌─────────────┐     ┌──────────┐     ┌─────────────┐
 │   Aruna    │────►│   Service   │────►│  GFBio   │────►│    Aruna    │
-│  (Source)  │     │  (Process)  │     │   API    │     │ (Result)    │
+│  (Source)  │     │  (Process)  │     │   API    │     │   (Result)  │
 └────────────┘     └─────────────┘     └──────────┘     └─────────────┘
      │                    │                   │                  │
      │ 1. Hook trigger    │                   │                  │
@@ -99,9 +99,9 @@ Your Webhook Service
      │                    │──────────────────►│                  │
      │                    │ 3. JSON result    │                  │
      │                    │◄──────────────────│                  │
-     │                    │ 4. Upload object  │                  │
+     │                    │          4. Upload object            │
      │                    │─────────────────────────────────────►│
-     │                    │ 5. Send callback  │                  │
+     │  5. Send callback  │                   │                  │
      │◄───────────────────│                   │                  │
 ```
 
